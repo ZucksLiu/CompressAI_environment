@@ -20,8 +20,8 @@ from compressai.layers.layers import PositionalEmbedding
 
 time_year_embedding = PositionalEmbedding(d_model=64, max_len=64)
 time_month_embedding = PositionalEmbedding(d_model=64, max_len=12, constant=8888)
-long_embedding = PositionalEmbedding(d_model=4, max_len=722, constant=6666)
-lati_embedding = PositionalEmbedding(d_model=4, max_len=1441, constant=7777)
+lati_embedding = PositionalEmbedding(d_model=4, max_len=722, constant=7777)
+long_embedding = PositionalEmbedding(d_model=4, max_len=1441, constant=6666)
 
 # grid_location_embedding_padding = construct_location_embedding_padding(long_embedding, lati_embedding, 0, 0, long_res=721, lat_res=1440, long_dim=4, lat_dim=4,padding_direction=[16,16, 23, 24])
 all_time_index = torch.arange(0, 756)
@@ -52,16 +52,16 @@ device = 'cuda:2' if torch.cuda.is_available() else 'cpu'
 metric = 'mse'  # only pre-trained model for mse are available for now
 quality = 6    # lower quality -> lower bit-rate (use lower quality to clearly see visual differences in the notebook)
 
-epoch_100 = load_checkpoint('cheng2020-anchor-transfer', '/data/zixinl6/Compress/compressai2/cheng2020-anchor-transfer_wind_epoch_100-6b359dc4.pth.tar')
+epoch_100 = load_checkpoint('cheng2020-anchor-transfer', '/efs/users/zucksliu/env_project/copied_model_ckpts/cheng2020-anchor-transfer_wind_epoch_100-e1f7430f.pth.tar')
 networks = {
    'epoch_100': epoch_100.to(device),
 }
 outputs = {}
 
-test_u10 = np.load("/data/zixinl6/downscaling/wind_test_tu_75_3_721_1440.npy")
-test_v10 = np.load("/data/zixinl6/downscaling/wind_test_tv_75_3_721_1440.npy")
-train_data1 = np.load('/data/zixinl6/downscaling/wind_tu_756_3_721_1440.npy')
-train_data2 = np.load('/data/zixinl6/downscaling/wind_tv_756_3_721_1440.npy')
+test_u10 = np.load("/efs/users/zucksliu/env_project/wind_dataset/wind_test_tu_75_3_721_1440.npy")
+test_v10 = np.load("/efs/users/zucksliu/env_project/wind_dataset/wind_test_tv_75_3_721_1440.npy")
+train_data1 = np.load('/efs/users/zucksliu/env_project/wind_dataset/wind_tu_756_3_721_1440.npy')
+train_data2 = np.load('/efs/users/zucksliu/env_project/wind_dataset/wind_tv_756_3_721_1440.npy')
 p_min1 = [199.93072509765625, -19.626953125, -4934.843585180133]  # u10
 max_min1 = [315.47837829589844 - 199.93072509765625, 16.193924903869625 + 19.626953125, 3888.185005817384 + 4934.843585180133]  # u10
 p_min2 = [199.93072509765625, -16.156066894531254, -4381.68313198965] #v10
@@ -86,7 +86,7 @@ metrics = {}
 for name, _ in networks.items():
     metrics[name] = dict.fromkeys(Keys, 0)
 
-grid_location_embedding_padding = construct_location_embedding_padding(long_embedding, lati_embedding, 0, 0, long_res=721, lat_res=1440, long_dim=4, lat_dim=4, padding_direction=[16, 16, 23, 24])
+grid_location_embedding_padding = construct_location_embedding_padding(long_embedding, lati_embedding, 0, 0, lat_res=721, long_res=1440, long_dim=4, lat_dim=4, padding_direction=[16, 16, 23, 24])
 print('grid_location_embedding_padding', grid_location_embedding_padding.shape)
 # anchor_index = np.arange(0, 757, 2)
 # target_index = np.arange(1, 756, 2)
@@ -131,13 +131,13 @@ with torch.no_grad():
             left_list = left_list + 16
             top_list = top_list + 23
             loc_emb = batch_location_embedding(grid_location_embedding_padding, left=left_list, top=top_list,
-                                               long_res=new_h, lat_res=new_w, loc_res=8)
+                                               long_res=new_w, lat_res=new_h, loc_res=8)
             # loc_emb = grid_location_embedding_padding
             loc_emb = loc_emb.expand(bs, loc_emb.size(1), loc_emb.size(2), loc_emb.size(3))
-
+            loc_emb = torch.permute(loc_emb, (0, 3, 1, 2))
+            # print(x_padded.shape, loc_emb.shape)
             # print(loc_emb.shape)
             # sleep
-            loc_emb = torch.permute(loc_emb, (0, 3, 1, 2))
 
             x_anchor = x_padded[time_index % 2 == 0]
             target_x = x_padded[time_index % 2 == 1]
