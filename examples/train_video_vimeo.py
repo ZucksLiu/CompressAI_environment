@@ -35,32 +35,20 @@ import sys
 
 from collections import defaultdict
 from typing import List
-import os
-os.environ['MPLCONFIGDIR'] = os.getcwd() + "/configs/"
-# print(os.environ['PYTHONPATH'])
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import ConcatDataset
+
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from compressai.datasets import WorldTensorDataset
-from compressai.datasets import VideoFolder
-import numpy as np
-from compressai.zoo import video_models
-class CustomDataParallel(nn.DataParallel):
-    """Custom DataParallel to access the module methods."""
-    def __getattr__(self, key):
-        try:
-            return super().__getattr__(key)
-        except AttributeError:
-            return getattr(self.module, key)
-def log(text: str):
-    filename = 'video_log.txt'
-    f = open(filename, 'a')
-    f.write(text+"\n")
-    f.close()
 
+from compressai.datasets import VideoFolder
+from compressai.zoo import video_models
+from compressai.utils.video.eval_model.__main__ import load_checkpoint, eval_model
+
+# from compressai.datasets import YuvVideo
+import torch.nn.functional as F
 def collect_likelihoods_list(likelihoods_list, num_pixels: int):
     bpp_info_dict = defaultdict(int)
     bpp_loss = 0
@@ -156,7 +144,6 @@ class RateDistortionLoss(nn.Module):
         self._check_tensors_list(target)
         self._check_tensors_list(output["x_hat"])
 
-        _, _, H, W = target[0].size()
         _, _, H, W = target[0].size()
         num_frames = len(target)
         out = {}
@@ -265,14 +252,29 @@ def train_one_epoch(
 ):
     model.train()
     device = next(model.parameters()).device
-    mse_loss_list = AverageMeter()
+
     for i, batch in enumerate(train_dataloader):
-        # print(i)
-        # print(batch)
-        # print(batch.shape)
-        # print(i)
+        d = [frames.to(device) for frames in batch]
+        print(len(d))
+        print(d[0].shape)
+        # exit()
+        h, w = d[0].size(2), d[0].size(3)
+        print(h)
+        print(w)
+        p = 128  # maximum 6 strides of 2
+        new_h = (h + p - 1) // p * p
+        new_w = (w + p - 1) // p * p
+        padding_left = (new_w - w) // 2
         # print()
-        d = [frames.float().to(device) for frames in batch]
+        padding_right = new_w - w - padding_left
+        padding_top = (new_h - h) // 2
+        padding_bottom = new_h - h - padding_top
+        d = [F.pad(
+            d[j],
+            (padding_left, padding_right, padding_top, padding_bottom),
+            mode="constant",
+            value=0,
+        ) for j in range(3)]
         # print(len(d))
         # print(d[0].shape)
         # exit()
@@ -289,9 +291,9 @@ def train_one_epoch(
 
         aux_loss = compute_aux_loss(model.aux_loss(), backward=True)
         aux_optimizer.step()
-        mse_loss_list.update(out_criterion["mse_loss"].detach())
+
         if i % 10 == 0:
-            log(
+            print(
                 f"Train epoch {epoch}: ["
                 f"{i*len(d)}/{len(train_dataloader.dataset)}"
                 f" ({100. * i / len(train_dataloader):.0f}%)]"
@@ -300,7 +302,6 @@ def train_one_epoch(
                 f'\tBpp loss: {out_criterion["bpp_loss"].item():.2f} |'
                 f"\tAux loss: {aux_loss.item():.2f}"
             )
-    print(mse_loss_list.avg)
 
 
 def test_epoch(epoch, test_dataloader, model, criterion):
@@ -314,9 +315,7 @@ def test_epoch(epoch, test_dataloader, model, criterion):
 
     with torch.no_grad():
         for batch in test_dataloader:
-            # print("here")
-            # print(batch)
-            d = [frames.float().to(device) for frames in batch]
+            d = [frames.to(device) for frames in batch]
             out_net = model(d)
             out_criterion = criterion(out_net, d)
 
@@ -325,7 +324,7 @@ def test_epoch(epoch, test_dataloader, model, criterion):
             loss.update(out_criterion["loss"])
             mse_loss.update(out_criterion["mse_loss"])
 
-    log(
+    print(
         f"Test epoch {epoch}: Average losses:"
         f"\tLoss: {loss.avg:.3f} |"
         f"\tMSE loss: {mse_loss.avg:.3f} |"
@@ -339,7 +338,7 @@ def test_epoch(epoch, test_dataloader, model, criterion):
 def save_checkpoint(state, is_best, filename="checkpoint.pth.tar"):
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, "checkpoint_video_wind_best_loss.pth.tar")
+        shutil.copyfile(filename, "checkpoint_best_loss.pth.tar")
 
 
 def parse_args(argv):
@@ -352,12 +351,12 @@ def parse_args(argv):
         help="Model architecture (default: %(default)s)",
     )
     parser.add_argument(
-        "-d", "--dataset", type=str, required=False, help="Training dataset"
+        "-d", "--dataset", type=str, required=True, help="Training dataset"
     )
     parser.add_argument(
         "-e",
         "--epochs",
-        default=800,
+        default=100,
         type=int,
         help="Number of epochs (default: %(default)s)",
     )
@@ -379,7 +378,7 @@ def parse_args(argv):
         "--lambda",
         dest="lmbda",
         type=float,
-        default=0.32,
+        default=1e-2,
         help="Bit-rate distortion parameter (default: %(default)s)",
     )
     parser.add_argument(
@@ -429,137 +428,53 @@ def main(argv):
         random.seed(args.seed)
 
     # Warning, the order of the transform composition should be kept.
-    # train_transforms = transforms.Compose(
-    #     [transforms.ToTensor(), transforms.RandomCrop(args.patch_size)]
-    # )
-    p_min1 = [199.93072509765625, -19.626953125, -4934.843585180133]  # u10
-    max_min1 = [315.47837829589844 - 199.93072509765625, 16.193924903869625 + 19.626953125,
-                3888.185005817384 + 4934.843585180133]  # u10
-
-    p_min2 = [199.93072509765625, -16.156066894531254, -4381.68313198965]  # v10
-    max_min2 = [315.47837829589844 - 199.93072509765625, 20.362215995788574 + 16.156066894531254,
-                4969.35201622079 + 4381.68313198965]  # v10
-
-    train_transforms1 = transforms.Compose(
-        [transforms.Normalize(p_min1, max_min1), transforms.RandomCrop((256, 256))]
-    )
-    train_transforms2 = transforms.Compose(
-        [transforms.Normalize(p_min2, max_min2), transforms.RandomCrop((256, 256))]
-    )
-    test_transforms1 = transforms.Compose(
-        [transforms.Normalize(p_min1, max_min1), transforms.CenterCrop((256, 256))]
-    )
-    test_transforms2 = transforms.Compose(
-        [transforms.Normalize(p_min2, max_min2), transforms.CenterCrop((256, 256))]
+    train_transforms = transforms.Compose(
+        [transforms.ToTensor()]
     )
 
-    # test_transforms = transforms.Compose(
-    #     [transforms.ToTensor(), transforms.CenterCrop(args.patch_size)]
-    # )
-    whole1 = np.load('/data/zixinl6/downscaling/wind_tu_756_3_721_1440.npy')
-    whole2 = np.load('/data/zixinl6/downscaling/wind_tv_756_3_721_1440.npy')
-    # tu_video = []
-    # for i in range(754):
-    #     y = np.stack([whole1[i + j] for j in range(3)], axis=0)
-    #     tu_video.append(y)
-    # result1 = np.stack(tu_video, axis=0) # 754, 3, 3, 721, 1440
-    # index = np.arange(754)
-    # np.random.seed(0)
-    # test_index1 = np.sort(np.random.choice(754, 75, replace=False))
-    # np.save('wind_test_index.nyp', test_index1)
-    # train_index1 = np.sort(np.setdiff1d(index, test_index1))
-    # tv_video = []
-    # for i in range(754):
-    #     y = np.stack([whole2[i + j] for j in range(3)], axis=0)
-    #     tv_video.append(y)
-    # result2 = np.stack(tv_video, axis=0)  # 754, 3, 3, 721, 1440
-    # test_index2 = np.sort(np.random.choice(754, 75, replace=False))
-    # train_index2 = np.sort(np.setdiff1d(index, test_index2))
+    test_transforms = transforms.Compose(
+        [transforms.ToTensor()]
+    )
+    train_dataset = VideoFolder(
+        args.dataset,
+        rnd_interval=True,
+        rnd_temp_order=True,
+        split="train",
+        transform=train_transforms,
+    )
+    test_dataset = VideoFolder(
+        args.dataset,
+        rnd_interval=False,
+        rnd_temp_order=False,
+        split="test",
+        transform=test_transforms,
+    )
+    device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
 
-    # print(test_index1.shape)
-    # print(train_index1.shape)
-    # print(train_index1)
-    # print(test_index1)
-
-    # train_data1 = result1[train_index1]
-    # train_data2 = result2[train_index2]
-    # test_data1 = result1[test_index1]
-    # test_data2 = result2[test_index2]
-    # print(train_data1.shape)
-    # print(test_data1.shape)
-    # exit()
-    # tr1 = torch.from_numpy(train_data1)
-    # tr2 = torch.from_numpy(train_data2)
-    #
-    # te1 = torch.from_numpy(test_data1)
-    # te2 = torch.from_numpy(test_data2)
-    #
-    dataset1 = torch.from_numpy(whole1)
-    dataset2 = torch.from_numpy(whole2)
-    np.random.seed(0)
-    # [1, 2, 3]: num = 754
-    # [0, 12, 24]: num = 744
-    num = 731
-    index = np.arange(num)
-    test_index1 = np.sort(np.random.choice(num, 70, replace=False))
-
-    train_index1 = np.sort(np.setdiff1d(index, test_index1))
-    np.save('wind_test_index1.nyp', test_index1)
-
-    test_index2 = np.sort(np.random.choice(num, 70, replace=False))
-    train_index2 = np.sort(np.setdiff1d(index, test_index2))
-    np.save('wind_test_index2.nyp', test_index2)
-
-    train_dataset1 = WorldTensorDataset(dataset1, train_index1, transform=train_transforms1,  rnd_interval=True,rnd_temp_order=True)
-    train_dataset2 = WorldTensorDataset(dataset2, train_index2, transform=train_transforms2,  rnd_interval=True,rnd_temp_order=True)
-
-    test_dataset1 = WorldTensorDataset(dataset1, test_index1,  transform=test_transforms1, rnd_interval=False, rnd_temp_order=False)
-    test_dataset2 = WorldTensorDataset(dataset2, test_index2, transform=test_transforms2, rnd_interval=False, rnd_temp_order=False)
-    device = "cuda:0" if args.cuda and torch.cuda.is_available() else "cpu"
-    print(device)
-    train_dataset = [train_dataset1, train_dataset2]
-    concat_dataset_train = ConcatDataset(train_dataset)
     train_dataloader = DataLoader(
-        concat_dataset_train,
+        train_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        shuffle=True,
-        pin_memory=(device == "cuda:0"),
+        shuffle=False,
+        pin_memory=(device == "cuda"),
     )
-    test_dataset = [test_dataset1, test_dataset2]
-    concat_dataset_test = ConcatDataset(test_dataset)
 
     test_dataloader = DataLoader(
-        concat_dataset_test,
+        test_dataset,
         batch_size=args.test_batch_size,
         num_workers=args.num_workers,
         shuffle=False,
-        pin_memory=(device == "cuda:0"),
+        pin_memory=(device == "cuda"),
     )
-
-    net = video_models[args.model](quality=9, pretrained=True)
-    # print(net)
-    # exit()
+    net = load_checkpoint('ssf2020', '/data/zixinl6/Compress/ssf2020-mse-9-e89345c4.pth.tar')
+    # net = video_models[args.model](quality=9, pretrained=True)
     net = net.to(device)
-    if args.cuda and torch.cuda.device_count() > 1:
-        net = CustomDataParallel(net, device_ids=[0, 1, 2, 3])
-    # total_params = sum(
-    #     param.numel() for param in net.parameters()
-    # )
-    # print(total_params)
-    # trainable_params = sum(
-    #     p.numel() for p in net.parameters() if p.requires_grad
-    # )
-    # print(trainable_params)
-    # exit()
+
     optimizer, aux_optimizer = configure_optimizers(net, args)
     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
     criterion = RateDistortionLoss(lmbda=args.lmbda, return_details=True)
 
     last_epoch = 0
-    # f = open('video_log.txt', 'w')
-    # f.write(str(argv) + "\n")
-    # f.close()
     if args.checkpoint:  # load from previous checkpoint
         print("Loading", args.checkpoint)
         checkpoint = torch.load(args.checkpoint, map_location=device)
@@ -571,7 +486,7 @@ def main(argv):
 
     best_loss = float("inf")
     for epoch in range(last_epoch, args.epochs):
-        # log(f"Learning rate: {optimizer.param_groups[0]['lr']}")
+        print(f"Learning rate: {optimizer.param_groups[0]['lr']}")
         train_one_epoch(
             net,
             criterion,
@@ -587,8 +502,7 @@ def main(argv):
         is_best = loss < best_loss
         best_loss = min(loss, best_loss)
 
-        if epoch % 25 == 0 or epoch == args.epochs - 1:
-            f_n = f"video_cheng2020_windworld_12_2_epoch_{epoch}.pth.tar"
+        if args.save:
             save_checkpoint(
                 {
                     "epoch": epoch,
@@ -598,7 +512,7 @@ def main(argv):
                     "aux_optimizer": aux_optimizer.state_dict(),
                     "lr_scheduler": lr_scheduler.state_dict(),
                 },
-                is_best, filename=f_n,
+                is_best,
             )
 
 

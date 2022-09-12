@@ -42,6 +42,7 @@ import numpy as np
 import PIL
 import PIL.Image as Image
 import torch
+from torchvision import transforms
 
 from pytorch_msssim import ms_ssim
 
@@ -76,6 +77,8 @@ def read_image(filepath: str, mode: str = "RGB") -> np.array:
 
 
 def _compute_psnr(a, b, max_val: float = 255.0) -> float:
+    print(a.shape)
+    print(b.shape)
     mse = torch.mean((a - b) ** 2).item()
     psnr = 20 * np.log10(max_val) - 10 * np.log10(mse)
     return psnr
@@ -122,8 +125,10 @@ def compute_metrics(
 
 def run_command(cmd, ignore_returncodes=None):
     cmd = [str(c) for c in cmd]
+    print(cmd)
     try:
         rv = subprocess.check_output(cmd)
+        print(rv)
         return rv.decode("ascii")
     except subprocess.CalledProcessError as err:
         if ignore_returncodes is not None and err.returncode in ignore_returncodes:
@@ -181,9 +186,20 @@ class Codec(abc.ABC):
         return_rec: bool = False,
     ):
         info, rec = self._run_impl(in_filepath, quality)
-        info.update(compute_metrics(rec, self._load_img(in_filepath), metrics))
+        # print(info)
+        # print(rec)
+        # exit()
+        # info.update(compute_metrics(rec, self._load_img(in_filepath), metrics))
+        ori = np.load("/data/zixinl6/downscaling/valid1_92_3_1302_663.npy")[0, :, :, :]
+        # print(rec)
+        # print(ori)
+        # exit()
+        info.update(compute_metrics(rec, ori , metrics))
+
         if return_rec:
             return info, rec
+        print(info)
+        exit()
         return info
 
 
@@ -534,6 +550,8 @@ class VTM(Codec):
         return args
 
     def _run_impl(self, in_filepath, quality):
+        print(in_filepath)
+        # print(quality)
         if not 0 <= quality <= 63:
             raise ValueError(f"Invalid quality value: {quality} (0,63)")
 
@@ -541,23 +559,64 @@ class VTM(Codec):
         bitdepth = 8
 
         # Convert input image to yuv 444 file
-        arr = np.asarray(self._load_img(in_filepath))
+        # arr = np.asarray(self._load_img(in_filepath))
+        # print(arr.shape)
+        # print(np.amax(arr))
+        # print(arr.dtype)
+
         fd, yuv_path = mkstemp(suffix=".yuv")
         out_filepath = os.path.splitext(yuv_path)[0] + ".bin"
 
-        arr = arr.transpose((2, 0, 1))  # color channel first
-
+        # arr = arr.transpose((2, 0, 1))  # color channel first
+        # print(arr)
+        arr = torch.from_numpy(np.load("/data/zixinl6/downscaling/valid1_92_3_1302_663.npy")[0, :, :, :])
+        arr[arr == 1.000e+20] = 100
+        arr[2, :, :] = torch.mul(arr[0, :, :], arr[ 1, :, :])
+        p_min = [-0.81310266, -0.0005704858, -26.1313]
+        max_min = [28.265799 + 0.81310266, 35.88579 + 0.0005704858, 825.0345 + 26.1313]
+        print(arr)
+        print(arr.shape)
         if not self.rgb:
+            print(self.rgb)
+            rgb = transforms.Normalize(p_min, max_min)(arr)
             # convert rgb content to YCbCr
-            rgb = torch.from_numpy(arr.copy()).float() / (2**bitdepth - 1)
-            arr = np.clip(rgb2ycbcr(rgb).numpy(), 0, 1)
-            arr = (arr * (2**bitdepth - 1)).astype(np.uint8)
+            # rgb = torch.from_numpy(arr.copy()).float() / (2**bitdepth - 1)
+            # rgb = rgb + 0.1
+            # mask = torch.where(rgb > 1.1, 1, 0)
+            rgb[rgb > 1] = 0
+            # arr[mask == 1] = 0
+            print("rgb")
+            print(rgb)
 
+            arr = rgb[:, :600, :300].numpy()
+            # arr = np.clip(rgb2ycbcr(rgb).numpy(), 0, 1)
+            print(arr)
+            # for ii in range(3):
+            #     arr[ii, :, :] = np.add(np.multiply(arr[ii, :, :], max_min[ii]), p_min[ii])
+
+            # arr = (arr * (2**bitdepth - 1)).astype(np.uint8)
+        print(arr.shape)
+
+        # arr = (arr * 255).astype(np.float16)
+        arr = arr.astype(np.float16)
+        # arr = arr.numpy()
+        # print(arr)
+        # print(arr.dtype)
+        # exit()
+        arr = np.zeros((1, 5,5))
         with open(yuv_path, "wb") as f:
             f.write(arr.tobytes())
-
+        # x = np.fromfile(yuv_path, dtype = arr.dtype)
+        # print(x)
+        # print(x.shape)
+        # print(x.dtype)
+        # exit()
+        # with open(yuv_path, "rb") as f:
+        #     print(f.read())
         # Encode
         height, width = arr.shape[1:]
+        print(height)
+        print(width)
         cmd = [
             self.encoder_path,
             "-i",
@@ -583,12 +642,12 @@ class VTM(Codec):
             "--ConformanceWindowMode=1",
         ]
 
-        if self.rgb:
-            cmd += [
-                "--InputColourSpaceConvert=RGBtoGBR",
-                "--SNRInternalColourSpace=1",
-                "--OutputInternalColourSpace=0",
-            ]
+        # if self.rgb:
+        # cmd += [
+        #     "--InputColourSpaceConvert=RGBtoGBR",
+        #     "--SNRInternalColourSpace=1",
+        #     "--OutputInternalColourSpace=0",
+        # ]
         start = time.time()
         run_command(cmd)
         enc_time = time.time() - start
@@ -598,18 +657,24 @@ class VTM(Codec):
         os.unlink(yuv_path)
 
         # Decode
+        # cmd = [self.decoder_path, "-b", out_filepath, "-o", yuv_path]
         cmd = [self.decoder_path, "-b", out_filepath, "-o", yuv_path, "-d", 8]
-        if self.rgb:
-            cmd.append("--OutputInternalColourSpace=GBRtoRGB")
+        cmd.append("--JVET_R0351_HIGH_BIT_DEPTH_ENABLED")
+        # if self.rgb:
+        #     cmd.append("--OutputInternalColourSpace=GBRtoRGB")
 
         start = time.time()
         run_command(cmd)
         dec_time = time.time() - start
 
         # Compute PSNR
-        rec_arr = np.fromfile(yuv_path, dtype=np.uint8)
+        rec_arr = np.fromfile(yuv_path,dtype = arr.dtype)
+        print(rec_arr.dtype)
+        print(rec_arr)
         rec_arr = rec_arr.reshape(arr.shape)
-
+        print(rec_arr.shape)
+        print(rec_arr)
+        # exit()
         arr = arr.astype(np.float32) / (2**bitdepth - 1)
         rec_arr = rec_arr.astype(np.float32) / (2**bitdepth - 1)
         if not self.rgb:
@@ -627,10 +692,13 @@ class VTM(Codec):
             "encoding_time": enc_time,
             "decoding_time": dec_time,
         }
+        # print(out)
 
         rec = Image.fromarray(
             (rec_arr.clip(0, 1).transpose(1, 2, 0) * 255.0).astype(np.uint8)
         )
+        print(rec)
+
         return out, rec
 
 
@@ -689,7 +757,6 @@ class HM(Codec):
             rgb = torch.from_numpy(arr.copy()).float() / (2**bitdepth - 1)
             arr = np.clip(rgb2ycbcr(rgb).numpy(), 0, 1)
             arr = (arr * (2**bitdepth - 1)).astype(np.uint8)
-
         with open(yuv_path, "wb") as f:
             f.write(arr.tobytes())
 

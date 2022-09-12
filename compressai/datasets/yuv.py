@@ -46,7 +46,7 @@ if __name__ == "__main__":
     while 1:
         ret, frame = cap.read()
         frames.append(frame)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB);
         print(rgb)
         print(frame.shape)
 #         i+=1
@@ -58,7 +58,7 @@ if __name__ == "__main__":
             break
     print(len(frames))
 
-class VideoFolder(Dataset):
+class YuvVideo(Dataset):
     def __init__(
         self,
         root,
@@ -70,27 +70,22 @@ class VideoFolder(Dataset):
         splitdir = Path(root)
         self.samples = [f for f in splitdir.iterdir()]
         self.frames = []
-        # for filename in self.samples:
-        size = (288, 352)
-        filename = '/data/zixinl6/Compress/YUV_video/mother-daughter_cif.yuv'
-        cap = VideoCaptureYUV(filename, size)
-        video = []
-        while 1:
-            ret, frame = cap.read()
-            if ret:
+        for filename in self.samples:
+            size = (288, 352)
+            cap = VideoCaptureYUV(filename, size)
+            video = []
+            while 1:
+                ret, frame = cap.read()
                 video.append(frame)
-            else:
-                break
-                # rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                # print(frame.shape)
-                # if not ret:
-                #     break
-                # if ret:
-                #     cv2.imshow("frame", rgb)
-                #     cv2.waitKey(30)
-                # else:
-                #     break
+                print(frame.shape)
+
+                if ret:
+                    cv2.imshow("frame", rgb)
+                    cv2.waitKey(30)
+                else:
+                    break
             self.frames.append(video)
 
         self.max_frames = 3  # hard coding for now
@@ -99,18 +94,12 @@ class VideoFolder(Dataset):
         self.transform = transform
 
     def __getitem__(self, index):
-        # print(index)
-        # print(np.transpose(self.frames[0][0], (2, 0, 1)).shape)
-        item = [self.transform(self.frames[0][index + j]) for j in range(3)]
+        item = [self.transform(self.frames[index + j]) for j in range(3)]
 
         return item
 
     def __len__(self):
-        # len = 0
-        return self.frames[0].__len__() -2
-        print(self.frames[0].__len__())
-        # print(self.frames)
-        for i in range(self.frames.__len__()):
-            len += self.frames[0].__len__()-2
-        print(len)
+        len = 0
+        for i in range(len(self.frames)):
+            len += len(self.frames[i])-2
         return len

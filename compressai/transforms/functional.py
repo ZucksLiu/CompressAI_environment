@@ -37,6 +37,7 @@ def rgb2ycbcr(rgb: Tensor) -> Tensor:
 
     r, g, b = rgb.chunk(3, -3)
     Kr, Kg, Kb = YCBCR_WEIGHTS["ITU-R_BT.709"]
+
     y = Kr * r + Kg * g + Kb * b
     cb = 0.5 * (b - y) / (1 - Kb) + 0.5
     cr = 0.5 * (r - y) / (1 - Kr) + 0.5

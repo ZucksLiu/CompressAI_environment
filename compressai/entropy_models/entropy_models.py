@@ -490,7 +490,8 @@ class EntropyBottleneck(EntropyModel):
         x = x.permute(*perm).contiguous()
         shape = x.size()
         values = x.reshape(x.size(0), 1, -1)
-
+        # print('z shape is:', values.shape)
+        # sleep
         # Add noise or quantize
 
         outputs = self.quantize(

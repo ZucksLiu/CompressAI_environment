@@ -30,6 +30,8 @@
 import math
 import warnings
 
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -105,7 +107,7 @@ class CompressionModel(nn.Module):
             updated |= rv
         return updated
 
-    def load_state_dict(self, state_dict):
+    def load_state_dict(self, state_dict, strict=False):
         # Dynamically update the entropy bottleneck buffers related to the CDFs
         update_registered_buffers(
             self.entropy_bottleneck,
@@ -113,7 +115,7 @@ class CompressionModel(nn.Module):
             ["_quantized_cdf", "_offset", "_cdf_length"],
             state_dict,
         )
-        super().load_state_dict(state_dict)
+        super().load_state_dict(state_dict, strict)
 
 
 class FactorizedPrior(CompressionModel):
@@ -274,14 +276,14 @@ class ScaleHyperprior(CompressionModel):
             "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
         }
 
-    def load_state_dict(self, state_dict):
+    def load_state_dict(self, state_dict, strict=False):
         update_registered_buffers(
             self.gaussian_conditional,
             "gaussian_conditional",
             ["_quantized_cdf", "_offset", "_cdf_length", "scale_table"],
             state_dict,
         )
-        super().load_state_dict(state_dict)
+        super().load_state_dict(state_dict, strict)
 
     @classmethod
     def from_state_dict(cls, state_dict):
@@ -464,8 +466,55 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         return 2 ** (4 + 2)
 
     def forward(self, x):
+        # print(x.shape)
+        # plt.imshow(x[0][0].cpu().detach().numpy())
+        # plt.title("cheng2020 input x")
+        # plt.colorbar()
+        # plt.savefig('x_input.png')
+        # print(i)
+        # print(x.shape)
         y = self.g_a(x)
+        # print(y.shape)
+        # y_name = 'g_a_1_192_48_92_1'
+        # np.save(y_name, y.cpu().detach().numpy())
+        # plt.imshow(y.cpu().detach().numpy())
+        # plt.title("cheng2020 after g_a x")
+        # plt.savefig('x after g_a.png')
+
         z = self.h_a(y)
+        # print(z.shape)
+        # z_name = 'h_a_63_192_12_23_1'
+        # np.save(z_name, z.cpu().detach().numpy())
+        # return y, z
+        # exit()
+
+        # CVAE ENCODER DECODER (m_a, m_s)
+        # ENC: P(U(different from z in hyperprior)|C,y_hat,z_hat), DEC: P(y_hat',z_hat'|U,C') 
+        # C KNOWN (TIME, Longitude, Latitude)),  
+        # Position embedding style embedding, originally for BERT position embedding
+        # Trend + Periods embedding, 
+        # Trend -> 1951, 1952,1953, ... -> directly use BERT positional embedding
+        # Periods -> {Similar to BERT embedding, but has only fix number}
+        # Ex: for month, we need 12, for day we need 31, for hour we need 24 
+        # Final embedding = Trend + Periods (in case what resolution you want)
+
+        # C = Embedding_year(1951) + Embedding_month(1)
+        # C' = Embedding_year(1952) + Embedding_month(12)
+        # Enc -> If we want to infer time from an image patch, 
+        # we could just build a classifier with number of class: # of years in embedding year
+        # + # of months in embedding_month,
+        # m_a will contain information that will not change across dataset, 
+        # once we know the anchor metadata and resolution
+        
+        # About modality: currently we restrict 3 channels to be mod A, mod B , mod A*B
+        # Suppose we already have t, u, t*u, then t can be reused in t * v
+        # Fix size of modality embedding, ex: temp, u, v, perticipation, ocean surface temp
+        # we could also add u * temp, v * temp and get their embedding.
+        # Embedding_modality={'temp': d_temp, 'u': d_u, 'v':..., 'temp*u': d_temp*u}
+        
+        
+        # Assume given y_hat, z_hat, if U can be obtained by y_hat and z_hat 
+
         z_hat, z_likelihoods = self.entropy_bottleneck(z)
         params = self.h_s(z_hat)
 
@@ -476,10 +525,21 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         gaussian_params = self.entropy_parameters(
             torch.cat((params, ctx_params), dim=1)
         )
-        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        # gaussian_params.shape = (1, 384, 16, 16) if patch H and W = 256
+        # scales_hat.shape = (1, 192, 16, 16)
+        # means_hat.shape = (1, 192, 16, 16)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1) 
+        # print(gaussian_params.shape)
+        # print(scales_hat.shape, means_hat.shape)
+        # sleep
         _, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
-        x_hat = self.g_s(y_hat)
 
+        x_hat = self.g_s(y_hat)
+        # print(x_hat.shape)
+        # plt.imshow(x_hat[0][0].cpu().detach().numpy())
+        # plt.title("cheng2020 x_hat after g_s")
+        # plt.savefig('x_hat after g_s.png')
+        # exit()
         return {
             "x_hat": x_hat,
             "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},

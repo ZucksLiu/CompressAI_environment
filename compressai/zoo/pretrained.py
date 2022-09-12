@@ -57,6 +57,32 @@ def rename_key(key: str) -> str:
 
     return key
 
+def change_name(key: str) -> str:
+    if key.startswith("g_a"):
+        key = "img_encoder"+key[3:]
+    elif key.startswith("g_s"):
+        key = "img_decoder"+key[3:]
+    elif key.startswith("h_a"):
+        key = "img_hyperprior.hyper_encoder"+key[3:]
+    elif key.startswith("h_s"):
+        key = "img_hyperprior.hyper_decoder"+key[3:]
+    else:
+        key = "img_hyperprior."+key
+    return key
+
+def cheng2020_update_stat_dict(state_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    state_dict = {change_name(k): v for k, v in state_dict.items()}
+    return state_dict
+
+
+def ssf2020_update_stat_dict(state_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    # print(type(state_dict))
+    new_state_dict = dict()
+    for k, v in state_dict.items():
+        if not k.startswith("img_"):
+            new_state_dict[k] = v
+    # print(new_state_dict)
+    return new_state_dict
 
 def load_pretrained(state_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
     """Convert state_dict keys."""

@@ -32,6 +32,7 @@ from .image import (
     bmshj2018_hyperprior,
     cheng2020_anchor,
     cheng2020_attn,
+    cheng2020_anchor_transfer,
     mbt2018,
     mbt2018_mean,
 )
@@ -45,6 +46,7 @@ image_models = {
     "mbt2018": mbt2018,
     "cheng2020-anchor": cheng2020_anchor,
     "cheng2020-attn": cheng2020_attn,
+    "cheng2020-anchor-transfer": cheng2020_anchor_transfer,
 }
 
 video_models = {

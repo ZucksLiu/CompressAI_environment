@@ -22,108 +22,10 @@ from torchvision.transforms.functional import crop
 from torch.utils.data import ConcatDataset
 import torch
 import numpy as np
-from compressai.layers.layers import PositionalEmbedding  
 # from maskedtensor import masked_tensor
 # from maskedtensor import as_masked_tensor
 # p_min = [-0.81310266, -0.0005704858, -26.1313]
 # max_min = [28.265799+0.81310266, 35.88579+0.0005704858, 825.0345+26.1313]
-
-time_year_embedding = PositionalEmbedding(d_model=64, max_len=64)
-time_month_embedding = PositionalEmbedding(d_model=64, max_len=12, constant=8888)
-lati_embedding = PositionalEmbedding(d_model=4, max_len=722, constant=6666)
-long_embedding = PositionalEmbedding(d_model=4, max_len=1441, constant=7777)
-
-def time_index_to_year_month(all_time_index):
-    all_year = all_time_index // 12
-    all_month = all_time_index % 12
-    return all_year, all_month
-
-def fetch_time_embedding_year_month(time_year_embedding, time_month_embedding, year, month, time_dim=64):
-    # print(time_month_embedding.pe[0, year,:].shape)
-    return time_year_embedding.pe[0, year, :] + time_month_embedding.pe[0, month, :]
-
-def batch_time_embedding(time_year_embedding, time_month_embedding, all_year, all_month, time_dim=64):
-    time_embedding = torch.zeros(all_year.shape[0], time_dim)
-    for i in range(all_year.shape[0]):
-        time_embedding[i, :] = fetch_time_embedding_year_month(time_year_embedding, time_month_embedding, all_year[i], all_month[i], time_dim)
-    return time_embedding
-
-def fetch_time_embedding(time_index, all_time_index_embedding):
-    return all_time_index_embedding[time_index, :]
-
-def construct_location_embedding_padding(long_embedding, lati_embedding, left, top, lat_res=721, long_res=1440, lat_dim=4, long_dim=4, padding_direction=[16, 16, 23, 24]):
-    pad_left, pad_right, pad_top, pad_bottom = padding_direction
-    pad_col = pad_left + pad_right
-    pad_row = pad_top + pad_bottom
-    mask = torch.zeros((1, lat_res + pad_row, long_res + pad_col, long_dim + lat_dim))
-    padding_embed = torch.cat([lati_embedding.pe[0, 0, :], long_embedding.pe[0, 0, :]]).reshape(1, 1, 1, -1)
-    # print(padding_embed)
-    mask = mask + padding_embed
-    # print(mask, mask.shape)
-    for i in range(left + pad_left, left + pad_left + lat_res):
-        for j in range(top + pad_top, top + pad_top + long_res):
-            # print(i, j)
-            mask[0, i, j, :] = torch.cat([lati_embedding.pe[0, i - left - pad_left + 1, :], long_embedding.pe[0, j - top - pad_top + 1, :]])
-    # print(mask, mask.shape)
-    # sleep
-    return mask
-
-def batch_location_embedding(grid_location_embedding_padding, left, top, lat_res=721, long_res=1440, loc_res=8):
-    bs = left.size(0)
-    mask = torch.cat([grid_location_embedding_padding[:, left[i]: left[i] + lat_res, top[i]: top[i] + long_res, :] for i in range(bs)], dim=0)
-    # print(mask)
-    return mask
-
-
-
-
-def fetch_target_data(time_index, dataset_index, left_list, top_list, concat_dataset_train, lati_res=721, long_res=1440, total_time=756, padding=[16, 16, 23, 24]):
-    sampling_method = ["same month", "neighbour time", "random"]
-    sampling_method = ["same month"]
-    bs = len(time_index)
-    pad_left, pad_right, pad_top, pad_bottom = padding
-    len_sampling_method = len(sampling_method)
-    sample_list = torch.randint(0, len_sampling_method, size=(bs,))
-    new_time_index = torch.zeros_like(time_index)
-    for i in range(bs):
-        if sampling_method[sample_list[i]] == "same month":
-            new_time_index[i] = (time_index[i] + torch.randint(1, total_time // 12, size=(1,)).item() * 12) % total_time
-        elif sampling_method[sample_list[i]] == "neighbour time":
-            new_time_index[i] = time_index[i] + torch.randint(-2, 2, size=(1,)).item()
-        elif sampling_method[sample_list[i]] == "random":
-            new_time_index[i] = torch.randint(0, total_time, size=(1,)).item()
-        else:
-            raise ValueError("Wrong sampling method")
-    target_data = torch.cat([concat_dataset_train.datasets[dataset_index[i]][new_time_index[i]][0].unsqueeze(0) for i in range(bs)], dim=0)
-    # print(target_data.shape)
-    target_data = F.pad(
-        target_data,
-        (pad_left, pad_right, pad_top, pad_bottom),
-        mode="constant",
-        value=0,
-    )
-    # print(target_data.shape)
-    target_data = torch.cat([target_data[i, :, left_list[i]: left_list[i] + lati_res, top_list[i]: top_list[i] + long_res].unsqueeze(0) for i in range(bs)], dim=0)
-    return target_data, new_time_index
-
-    
-    
-    
-    
-
-    
-
-
-# grid_location_embedding_padding = construct_location_embedding_padding(long_embedding, lati_embedding, 0, 0, long_res=3, lat_res=3, long_dim=4, lat_dim=4,padding_direction=[1,2,3,4])
-# batch_location_embedding(grid_location_embedding_padding, torch.tensor([0, 1, 2]), torch.tensor([0, 1, 2]), lat_res=4, long_res=4, loc_res=8)
-# sleep
-all_time_index = torch.arange(0, 756)
-all_year, all_month = time_index_to_year_month(all_time_index)
-all_time_index_embedding = batch_time_embedding(time_year_embedding, time_month_embedding, all_year, all_month, time_dim=64)
-
-
-grid_location_embedding_padding = construct_location_embedding_padding(long_embedding, lati_embedding, 0, 0, lat_res=721, long_res=1440, long_dim=4, lat_dim=4, padding_direction=[16, 16, 23, 24])
-
 def crop256(image):
     i = torch.randint(0, 1302 - 256 + 1, size=(1,)).item()
     j = torch.randint(0, 300 - 256 + 1, size=(1,)).item()
@@ -232,7 +134,7 @@ def configure_optimizers(net, args):
 
 
 def train_one_epoch(
-    model, criterion, train_dataloader, optimizer, aux_optimizer, epoch, clip_max_norm, concat_dataset_train=None
+    model, criterion, train_dataloader, optimizer, aux_optimizer, epoch, clip_max_norm
 ):
     model.train()
     device = next(model.parameters()).device
@@ -247,21 +149,11 @@ def train_one_epoch(
     zeta_mse_list =AverageMeter()
 
     zero_counts_distribution = torch.zeros(12)
-    padding = [16, 16, 23, 24]
-    pad_left, pad_right, pad_top, pad_bottom = padding
-    idx_left, idx_right, idx_top, idx_bottom = [23, 24, 16, 16]
+
     for i, d in enumerate(train_dataloader):
-        d, time_index, dataset_index = d
         d = d.float() # change to float 32 to match the model
-        bs, c, h, w = d.size(0), d.size(1), d.size(2), d.size(3) # batch size, channel, height(721), width(1440)
-        p = 64  # maximum 6 strides of 2
-        d = F.pad(
-            d,
-            (pad_left, pad_right, pad_top, pad_bottom),
-            mode="constant",
-            value=0,
-        )
-        print(d.shape)
+        # h, w = d.size(2), d.size(3)
+        # p = 64  # maximum 6 strides of 2
         # new_h = (h + p - 1) // p * p
         # new_w = (w + p - 1) // p * p
         # padding_left = (new_w - w) // 2
@@ -274,50 +166,48 @@ def train_one_epoch(
         #     mode="constant",
         #     value=0,
         # )
-
-
-
+        # print(d.shape)
+        # exit()
+        # d = d + 0.1
+        # d[d > 1.1] = 0
+        # y = d.view(64, -1)
+        # zero_percent = torch.round((256 *256 * 3 - torch.count_nonzero(y, dim=1))/(256 *256 * 3) * 100)
+        # zero_counts_distribution[0] += 64 - torch.count_nonzero(zero_percent)
+        # # print(d.shape[0])
+        # # print(zero_percent)  # 64
+        # for j in range(1, 11):
+        #     # print(10*j)
+        #     t = torch.where((zero_percent <= 10 * j) & (zero_percent > 10 * (j-1)), 1, 0)
+        #     # print(t)
+        #     zero_counts_distribution[j] += torch.count_nonzero(t)
+        #     # print(zero_counts_distribution[j])
+        # t = zero_percent == 100
+        # # print(t)
+        # zero_counts_distribution[11] += torch.count_nonzero(t)
+        # print(zero_counts_distribution)
+        # print(zero_percent.shape)
+        # print(d.shape)
+        # exit()
+        # print(d)
+        # exit()
         # h, w = d.size(2), d.size(3)
-        patch_sizes = [64, 128, 256]
-        patch_sizes = [256]
-        patch_size = np.random.choice(patch_sizes, 1)[0]
+        # patch_sizes = [64, 128, 256]
+        # patch_size = np.random.choice(patch_sizes, 1)[0]
         # # print(h-patch_size+1)
-        left = torch.randint(0, h-patch_size+1+idx_left, size=(1,)).item()
-        top = torch.randint(0, w-patch_size+1+idx_top, size=(1,)).item()
-        left_list = torch.randint(0, h-patch_size+1+idx_left, size=(bs,))
-        top_list = torch.randint(0, w-patch_size+1+idx_top, size=(bs,))
-        # print(left_list)
-        # print(top_list)
-        # print(left, top)
-        # sleep
-        right_list = left_list + patch_size
-        bottom_list = top_list + patch_size
+        # left = torch.randint(0, h-patch_size+1, size=(1,)).item()
+        # top = torch.randint(0, w-patch_size+1, size=(1,)).item()
+        # right = left + patch_size
+        # bottom = top + patch_size
         # d = d[:, :, left:right, top:bottom]
         # d = crop(d, left,top, patch_size, patch_size)
-        loc_emb = batch_location_embedding(grid_location_embedding_padding, left_list, top_list, lat_res=patch_size, long_res=patch_size, loc_res=8)
-        loc_emb = torch.permute(loc_emb, (0, 3, 1, 2))
-        # print(loc_emb.shape)
-        # sleep
-        d = torch.cat([d[i, :, left_list[i]: left_list[i] + patch_size, top_list[i]: top_list[i] + patch_size].unsqueeze(0) for i in range(bs)], dim=0)
         # print(d.shape)
-        target_data, new_time_index = fetch_target_data(time_index, dataset_index, left_list, top_list, concat_dataset_train, lati_res=patch_size, long_res=patch_size, total_time=756, padding=padding)
-        # print(target_data.shape)
-        d_time_embedding = fetch_time_embedding(time_index, all_time_index_embedding)
-        target_data_time_embedding = fetch_time_embedding(new_time_index, all_time_index_embedding)        
-        print(d_time_embedding.shape)
-        print(target_data_time_embedding.shape)
-        # sleep
-        d = d.float().to(device)
-        target_data = target_data.float().to(device)
-        d_time_embedding = d_time_embedding.float().to(device)
-        target_data_time_embedding = target_data_time_embedding.float().to(device)
-        loc_emb = loc_emb.float().to(device)
+        d = d.to(device)
         optimizer.zero_grad()
         aux_optimizer.zero_grad()
 
-        out_net = model(d, target_x=target_data, x_time_embedding=d_time_embedding, target_x_time_embedding=target_data_time_embedding, loc_mask=loc_emb, flag=1)
+        out_net = model(d)
         # print(d[0, 0, :, :])
-        sleep
+
         # n = d.cpu().numpy().flatten()
         # print(np.count_nonzero(n > 1))
         # plt.hist(n)
@@ -498,13 +388,13 @@ def parse_args(argv):
         choices = image_models.keys(),
         help="Model architecture (default: %(default)s)",
     )
-    parser.add_argument(
-        "-d", "--dataset", type=str, required=False, help="Training dataset"
-    )
+    # parser.add_argument(
+    #     "-d", "--dataset", type=str, required=False, help="Training dataset"
+    # )
     parser.add_argument(
         "-e",
         "--epochs",
-        default=100,
+        default=800,
         type=int,
         help="Number of epochs (default: %(default)s)",
     )
@@ -565,7 +455,7 @@ def parse_args(argv):
     )
     parser.add_argument("--checkpoint", type=str, help="Path to a checkpoint")
     parser.add_argument("--channel", action="store_true", default =False, help="change the third channel to temp multiply slat")
-    parser.add_argument("--dir", type=str, help="Exported model directory.")
+    parser.add_argument("-d", "--dir", type=str, help="Exported model directory.")
     args = parser.parse_args(argv)
     return args
 
@@ -660,10 +550,10 @@ def main(argv):
     # print(tr.shape)
 
     train_transforms1 = transforms.Compose(
-        [transforms.Normalize(p_min1, max_min1)]
+        [transforms.Normalize(p_min1, max_min1), transforms.RandomCrop((256, 256))]
     )
     train_transforms2 = transforms.Compose(
-        [transforms.Normalize(p_min2, max_min2)]
+        [transforms.Normalize(p_min2, max_min2), transforms.RandomCrop((256, 256))]
     )
 
     # train_transforms2 = transforms.Compose(
@@ -680,14 +570,14 @@ def main(argv):
         [transforms.Normalize(p_min2, max_min2), transforms.CenterCrop((256, 256))]
     )
 
-    train_dataset1 = CustomTensorDataset(tr1, transforms = train_transforms1, dataset_index=0)
-    train_dataset2 = CustomTensorDataset(tr2, transforms = train_transforms2, dataset_index=1)
+    train_dataset1 = CustomTensorDataset(tr1, transforms = train_transforms1, get_index=False)
+    train_dataset2 = CustomTensorDataset(tr2, transforms = train_transforms2, get_index=False)
 
 
     # train_dataset = CustomTensorDataset(tr, transforms = [train_transforms1,train_transforms2, train_transforms3], prob=[10, 30, 60])
     # print(train_dataset.tensors)
-    test_dataset1 = CustomTensorDataset(te1, transforms = test_transforms1)
-    test_dataset2 = CustomTensorDataset(te2, transforms=test_transforms2)
+    test_dataset1 = CustomTensorDataset(te1, transforms = test_transforms1, get_index=False)
+    test_dataset2 = CustomTensorDataset(te2, transforms = test_transforms2, get_index=False)
     device = 'cuda:2' if args.cuda and torch.cuda.is_available() else "cpu"
     print(device)
     train_dataset = [train_dataset1, train_dataset2]
@@ -761,9 +651,8 @@ def main(argv):
             aux_optimizer,
             epoch,
             args.clip_max_norm,
-            concat_dataset_train
         )
-        exit()
+        # exit()
 
         train_loss.append(out_cri)
         train_mse.append(mse)

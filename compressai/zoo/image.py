@@ -36,10 +36,11 @@ from compressai.models import (
     JointAutoregressiveHierarchicalPriors,
     MeanScaleHyperprior,
     ScaleHyperprior,
+    Cheng2020Anchor_Transfer,
 )
 
 from .pretrained import load_pretrained
-
+import torch
 __all__ = [
     "bmshj2018_factorized",
     "bmshj2018_hyperprior",
@@ -47,6 +48,7 @@ __all__ = [
     "mbt2018_mean",
     "cheng2020_anchor",
     "cheng2020_attn",
+    "cheng2020_anchor_transfer",
 ]
 
 model_architectures = {
@@ -56,6 +58,7 @@ model_architectures = {
     "mbt2018": JointAutoregressiveHierarchicalPriors,
     "cheng2020-anchor": Cheng2020Anchor,
     "cheng2020-attn": Cheng2020Attention,
+    "cheng2020-anchor-transfer": Cheng2020Anchor_Transfer,
 }
 
 root_url = "https://compressai.s3.amazonaws.com/models/v1"
@@ -184,6 +187,24 @@ model_urls = {
             6: f"{root_url}/cheng2020_attn-ms-ssim-6-216423ec.pth.tar",
         },
     },
+    "cheng2020-anchor-transfer": {
+        "mse": {
+            1: f"{root_url}/cheng2020-anchor-1-dad2ebff.pth.tar",
+            2: f"{root_url}/cheng2020-anchor-2-a29008eb.pth.tar",
+            3: f"{root_url}/cheng2020-anchor-3-e49be189.pth.tar",
+            4: f"{root_url}/cheng2020-anchor-4-98b0b468.pth.tar",
+            5: f"{root_url}/cheng2020-anchor-5-23852949.pth.tar",
+            6: f"{root_url}/cheng2020-anchor-6-4c052b1a.pth.tar",
+        },
+        "ms-ssim": {
+            1: f"{root_url}/cheng2020_anchor-ms-ssim-1-20f521db.pth.tar",
+            2: f"{root_url}/cheng2020_anchor-ms-ssim-2-c7ff5812.pth.tar",
+            3: f"{root_url}/cheng2020_anchor-ms-ssim-3-c23e22d5.pth.tar",
+            4: f"{root_url}/cheng2020_anchor-ms-ssim-4-0e658304.pth.tar",
+            5: f"{root_url}/cheng2020_anchor-ms-ssim-5-c0a95e77.pth.tar",
+            6: f"{root_url}/cheng2020_anchor-ms-ssim-6-f2dc1913.pth.tar",
+        },
+    },
 }
 
 cfgs = {
@@ -243,11 +264,19 @@ cfgs = {
         5: (192,),
         6: (192,),
     },
+    "cheng2020-anchor-transfer": {
+        1: (128,),
+        2: (128,),
+        3: (128,),
+        4: (192,),
+        5: (192,),
+        6: (192,),
+    },
 }
 
 
 def _load_model(
-    architecture, metric, quality, pretrained=False, progress=True, **kwargs
+    architecture, metric, quality, pretrained=False, progress=True, combine=False, **kwargs
 ):
     if architecture not in model_architectures:
         raise ValueError(f'Invalid architecture name "{architecture}"')
@@ -268,7 +297,33 @@ def _load_model(
         state_dict = load_pretrained(state_dict)
         model = model_architectures[architecture].from_state_dict(state_dict)
         return model
-
+    if combine:
+        path = '/data/zixinl6/Compress/compressai2/ocean_quality6_cheng2020_epoch_999.pth.tar'
+        state_dict = torch.load(path)['state_dict']
+        state_dict = load_pretrained(state_dict)
+        # key_list = [ "m_a_time.0.weight", "m_a_time.0.bias", "m_a_time.2.weight", "m_a_time.2.bias", "m_a.0.weight", "m_a.0.bias", "m_a.2.weight", "m_a.2.bias", "m_a.4.weight", "m_a.4.bias", "m_a.6.weight", "m_a.6.bias", "m_a.8.weight", "m_a.8.bias", "n_a.0.weight", "n_a.0.bias", "n_a.2.weight", "n_a.2.bias", "n_a.4.weight", "n_a.4.bias"]
+        # for i in key_list:
+        #     if i == "m_a_time.0.weight":
+        #         state_dict[i] = torch.zeros((192, 128))
+        #     if i == "m_a_time.2.weight":
+        #         state_dict[i] = torch.zeros((192, 128))
+        #     else:
+        #         state_dict[i] = None
+        # print(state_dict)
+        # state_dict['m_a_time.0.weight']=None
+        print(architecture)
+        model = model_architectures[architecture](*cfgs[architecture][quality], **kwargs)
+        # print(model)
+        model.load_state_dict(state_dict, strict=False)
+        # model = model_architectures[architecture].from_state_dict(state_dict)
+        # model = model_architectures[architecture](*cfgs[architecture][quality], **kwargs)
+        # print(model)
+        # print(model['state_dict'])
+        # exit()
+        print('load pretrained model')
+        sleep
+        return model
+    print('not pretrained')
     model = model_architectures[architecture](*cfgs[architecture][quality], **kwargs)
     return model
 
@@ -408,4 +463,27 @@ def cheng2020_attn(quality, metric="mse", pretrained=False, progress=True, **kwa
 
     return _load_model(
         "cheng2020-attn", metric, quality, pretrained, progress, **kwargs
+    )
+
+def cheng2020_anchor_transfer(quality, metric="mse", pretrained=False, progress=True, combine=False, **kwargs):
+    r"""Anchor model variant from `"Learned Image Compression with
+    Discretized Gaussian Mixture Likelihoods and Attention Modules"
+    <https://arxiv.org/abs/2001.01568>`_, by Zhengxue Cheng, Heming Sun, Masaru
+    Takeuchi, Jiro Katto.
+
+    Args:
+        quality (int): Quality levels (1: lowest, highest: 6)
+        metric (str): Optimized metric, choose from ('mse', 'ms-ssim')
+        pretrained (bool): If True, returns a pre-trained model
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    if metric not in ("mse", "ms-ssim"):
+        raise ValueError(f'Invalid metric "{metric}"')
+
+    if quality < 1 or quality > 6:
+        raise ValueError(f'Invalid quality "{quality}", should be between (1, 6)')
+    print(combine)
+    # sleep 
+    return _load_model(
+        "cheng2020-anchor-transfer", metric, quality, pretrained, progress, combine, **kwargs
     )

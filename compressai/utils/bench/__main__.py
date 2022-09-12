@@ -79,13 +79,15 @@ def collect(
         filepaths.extend(Path(dataset).rglob(f"*{ext}"))
 
     pool = mp.Pool(num_jobs) if num_jobs > 1 else None
+    # print(pool)
 
     if len(filepaths) == 0:
         print("No images found in the dataset directory")
         sys.exit(1)
-
+    # print(qps)
     args = [(codec, i, f, q, metrics) for i, q in enumerate(qps) for f in filepaths]
-
+    # print(args)
+    # exit()
     if pool:
         rv = pool.starmap(func, args)
     else:
@@ -94,9 +96,12 @@ def collect(
     results = [defaultdict(float) for _ in range(len(qps))]
 
     for i, metrics in rv:
+        print(i)
+        print(metrics)
         for k, v in metrics.items():
             results[i][k] += v
 
+    exit()
     # aggregate results for all images
     for i, _ in enumerate(results):
         for k, v in results[i].items():
@@ -107,6 +112,7 @@ def collect(
     for r in results:
         for k, v in r.items():
             out[k].append(v)
+    # print(out)
     return out
 
 
@@ -133,7 +139,7 @@ def setup_common_args(parser):
         "--qps",
         dest="qps",
         metavar="Q",
-        default=[75],
+        default=[63],
         nargs="+",
         type=int,
         help="list of quality/quantization parameter (default: %(default)s)",
@@ -164,7 +170,8 @@ def main(argv):
         args.metrics,
         args.num_jobs,
     )
-
+    # print(results)
+    # exit()
     output = {
         "name": codec.name,
         "description": codec.description,

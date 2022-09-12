@@ -28,10 +28,10 @@
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from torch.hub import load_state_dict_from_url
-
+import torch
 from compressai.models.video import ScaleSpaceFlow
 
-from .pretrained import load_pretrained
+from .pretrained import load_pretrained, cheng2020_update_stat_dict, ssf2020_update_stat_dict
 
 __all__ = [
     "ssf2020",
@@ -42,6 +42,25 @@ model_architectures = {
 }
 
 root_url = "https://compressai.s3.amazonaws.com/models/v1"
+# model_urls = {
+#     "ssf2020": {
+#         "mse": {
+#             1: f"{root_url}/ssf2020-mse-1-c1ac1a47.pth.tar",
+#             2: f"{root_url}/ssf2020-mse-2-79ed4e19.pth.tar",
+#             3: f"{root_url}/ssf2020-mse-3-9c8b998d.pth.tar",
+#             4: f"{root_url}/ssf2020-mse-4-577c1eda.pth.tar",
+#             5: f"{root_url}/ssf2020-mse-5-1dd7d574.pth.tar",
+#             # 6: "/data/zixinl6/Compress/compressai2/ocean_quality6_cheng2020_epoch_999.pth.tar",
+#             6: f"{root_url}/ssf2020-mse-6-59dfb6f9.pth.tar",
+#             7: f"{root_url}/ssf2020-mse-7-4d867411.pth.tar",
+#             8: f"{root_url}/ssf2020-mse-8-26439e20.pth.tar",
+#             9: "/data/zixinl6/Compress/compressai2/ocean_quality6_cheng2020_epoch_999.pth.tar",
+#             # 9: f"{root_url}/ssf2020-mse-9-e89345c4.pth.tar",
+#         }
+#     }, "ssf2020_cheng2020":{
+#             9: f"{root_url}/ssf2020-mse-9-e89345c4.pth.tar",
+#     }
+# }
 model_urls = {
     "ssf2020": {
         "mse": {
@@ -57,7 +76,9 @@ model_urls = {
         }
     }
 }
-
+def Merge(dict1, dict2):
+    res = {**dict1, **dict2}
+    return res
 
 def _load_model(
     architecture, metric, quality, pretrained=False, progress=True, **kwargs
@@ -76,13 +97,47 @@ def _load_model(
         ):
             raise RuntimeError("Pre-trained model not yet available")
 
+        if (
+            architecture not in model_urls
+            or metric not in model_urls[architecture]
+            or quality not in model_urls[architecture][metric]
+        ):
+            raise RuntimeError("Pre-trained model not yet available")
+
         url = model_urls[architecture][metric][quality]
         state_dict = load_state_dict_from_url(url, progress=progress)
         state_dict = load_pretrained(state_dict)
         model = model_architectures[architecture].from_state_dict(state_dict)
         return model
+        # url = model_urls[architecture][metric][quality]
+        # cheng2020_state_dict = torch.load(url)['state_dict'] # cheng2020
+        # ssf2020 = load_state_dict_from_url(model_urls['ssf2020_cheng2020'][9]) #ssf2020
+        #
+        #
+        # state_dict = load_pretrained(cheng2020_state_dict)
+        # ssf2020 = load_pretrained(ssf2020)
+        #
+        # # remove ssf2020:
+        # ssf2020 = ssf2020_update_stat_dict(ssf2020)
+        # state_dict = cheng2020_update_stat_dict(state_dict)
+        # # print(type(state_dict))
+        # state_dict = Merge(state_dict, ssf2020)
+        # # ssf2020['img_encoder.0.weight'] = state_dict['g_a.0.conv2.bias']
+        # # print(ssf2020['img_encoder.0.weight'])
+        # # print("here")
+        # # print(state_dict)
+        # # print("there")
+        # # print(ssf2020.keys())
+        # # print("uere")
+        # # print(new_ssf2020.keys())
+        # # exit()
+
+        # model = model_architectures[architecture].from_state_dict(state_dict)
+        # exit()
+        # return model
 
     model = model_architectures[architecture](**kwargs)
+    # print(model)
     return model
 
 

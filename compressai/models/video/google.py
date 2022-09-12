@@ -31,6 +31,8 @@ import math
 
 from typing import List
 
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -50,8 +52,15 @@ from ..utils import (
     quantize_ste,
     update_registered_buffers,
 )
-
-
+from compressai.layers import MaskedConv2d
+from compressai.layers import (
+    AttentionBlock,
+    ResidualBlock,
+    ResidualBlockUpsample,
+    ResidualBlockWithStride,
+    conv3x3,
+    subpel_conv3x3,
+)
 class ScaleSpaceFlow(nn.Module):
     r"""Google's first end-to-end optimized video compression from E.
     Agustsson, D. Minnen, N. Johnston, J. Balle, S. J. Hwang, G. Toderici: `"Scale-space flow for end-to-end
@@ -159,6 +168,10 @@ class ScaleSpaceFlow(nn.Module):
 
             def forward(self, y):
                 z = self.hyper_encoder(y)
+                print("uher")
+                print(z.shape)
+                np.save('ssf_vimeo_h_a_300_192_3_3_3', z.cpu().detach().numpy())
+                exit()
                 z_hat, z_likelihoods = self.entropy_bottleneck(z)
 
                 scales = self.hyper_decoder_scale(z_hat)
@@ -194,11 +207,186 @@ class ScaleSpaceFlow(nn.Module):
                 )
 
                 return y_hat
+        class Encoder_cheng(nn.Sequential):
+            def __init__(
+                    self,in_planes: int, N:int = 192,
+            ):
+                super().__init__(
+                    ResidualBlockWithStride(in_planes, N, stride=2),
+                    ResidualBlock(N, N),
+                    ResidualBlockWithStride(N, N, stride=2),
+                    ResidualBlock(N, N),
+                    ResidualBlockWithStride(N, N, stride=2),
+                    ResidualBlock(N, N),
+                    conv3x3(N, N, stride=2),
+                )
 
+        class Decoder_cheng(nn.Sequential):
+            def __init__(
+                    self, out_planes: int, N:int = 192,
+            ):
+                super().__init__(
+                    ResidualBlock(N, N),
+                    ResidualBlockUpsample(N, N, 2),
+                    ResidualBlock(N, N),
+                    ResidualBlockUpsample(N, N, 2),
+                    ResidualBlock(N, N),
+                    ResidualBlockUpsample(N, N, 2),
+                    ResidualBlock(N, N),
+                    subpel_conv3x3(N, out_planes, 2),
+                )
+
+        class HyperEncoder_cheng(nn.Sequential):
+            def __init__(
+                    self, N: int = 192,
+            ):
+                super().__init__(
+                    conv3x3(N, N),
+                    nn.LeakyReLU(inplace=True),
+                    conv3x3(N, N),
+                    nn.LeakyReLU(inplace=True),
+                    conv3x3(N, N, stride=2),
+                    nn.LeakyReLU(inplace=True),
+                    conv3x3(N, N),
+                    nn.LeakyReLU(inplace=True),
+                    conv3x3(N, N, stride=2),
+                )
+
+        class HyperDecoder_cheng(nn.Sequential):
+            def __init__(
+                self, N: int = 192,
+            ):
+                super().__init__(
+                    conv3x3(N, N),
+                    nn.LeakyReLU(inplace=True),
+                    subpel_conv3x3(N, N, 2),
+                    nn.LeakyReLU(inplace=True),
+                    conv3x3(N, N * 3 // 2),
+                    nn.LeakyReLU(inplace=True),
+                    subpel_conv3x3(N * 3 // 2, N * 3 // 2, 2),
+                    nn.LeakyReLU(inplace=True),
+                    conv3x3(N * 3 // 2, N * 2)
+                )
+        class Hyperprior_cheng(CompressionModel):
+            def __init__(self, N=192, M=192):
+                super().__init__(entropy_bottleneck_channels=N)
+                self.hyper_encoder = HyperEncoder_cheng()
+                self.hyper_decoder = HyperDecoder_cheng()
+                self.gaussian_conditional = GaussianConditional(None)
+                self.entropy_parameters = nn.Sequential(
+                    nn.Conv2d(M * 12 // 3, M * 10 // 3, 1),
+                    nn.LeakyReLU(inplace=True),
+                    nn.Conv2d(M * 10 // 3, M * 8 // 3, 1),
+                    nn.LeakyReLU(inplace=True),
+                    nn.Conv2d(M * 8 // 3, M * 6 // 3, 1),
+                )
+
+                self.context_prediction = MaskedConv2d(
+                    M, 2 * M, kernel_size=5, padding=2, stride=1
+                )
+
+                self.N = int(N)
+                self.M = int(M)
+
+            def forward(self, y):
+                z = self.hyper_encoder(y)
+                z_hat, z_likelihoods = self.entropy_bottleneck(z)
+                params = self.hyper_decoder(z_hat)
+
+                y_hat = self.gaussian_conditional.quantize(
+                    y, "noise" if self.training else "dequantize"
+                )
+                ctx_params = self.context_prediction(y_hat)
+                gaussian_params = self.entropy_parameters(
+                    torch.cat((params, ctx_params), dim=1)
+                )
+                scales_hat, means_hat = gaussian_params.chunk(2, 1)
+                _, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
+
+                return y_hat, {"y": y_likelihoods, "z": z_likelihoods}
+
+            def compress(self, y):
+                z = self.hyper_encoder(y)
+
+                z_strings = self.entropy_bottleneck.compress(z)
+                z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
+
+                params = self.hyper_decoder(z_hat)
+
+                s = 4  # scaling factor between z and y
+                kernel_size = 5  # context prediction kernel size
+                padding = (kernel_size - 1) // 2
+
+                y_height = z_hat.size(2) * s
+                y_width = z_hat.size(3) * s
+
+                y_hat = F.pad(y, (padding, padding, padding, padding))
+
+                y_strings = []
+                for i in range(y.size(0)):
+                    string = self._compress_ar(
+                        y_hat[i: i + 1],
+                        params[i: i + 1],
+                        y_height,
+                        y_width,
+                        kernel_size,
+                        padding,
+                    )
+                    y_strings.append(string)
+
+                return y_hat, {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
+
+            def decompress(self, strings, shape):
+                assert isinstance(strings, list) and len(strings) == 2
+                z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
+                params = self.hyper_decoder(z_hat)
+
+                s = 4  # scaling factor between z and y
+                kernel_size = 5  # context prediction kernel size
+                padding = (kernel_size - 1) // 2
+
+                y_height = z_hat.size(2) * s
+                y_width = z_hat.size(3) * s
+
+                # initialize y_hat to zeros, and pad it so we can directly work with
+                # sub-tensors of size (N, C, kernel size, kernel_size)
+                y_hat = torch.zeros(
+                    (z_hat.size(0), self.M, y_height + 2 * padding, y_width + 2 * padding),
+                    device=z_hat.device,
+                )
+
+                for i, y_string in enumerate(strings[0]):
+                    self._decompress_ar(
+                        y_string,
+                        y_hat[i: i + 1],
+                        params[i: i + 1],
+                        y_height,
+                        y_width,
+                        kernel_size,
+                        padding,
+                    )
+
+                y_hat = F.pad(y_hat, (-padding, -padding, -padding, -padding))
+
+
+                return y_hat
+        # cheng2020
+        # self.img_encoder = Encoder_cheng(3)
+        # self.img_decoder = Decoder_cheng(3)
+        # self.img_hyperprior = Hyperprior_cheng()
+
+        # self.res_encoder = Encoder(3)
+        # self.res_decoder = Decoder(3, in_planes=384)
+        # self.res_hyperprior = Hyperprior()
+        #
+        # self.motion_encoder = Encoder(6)
+        # self.motion_decoder = Decoder(3)
+        # self.motion_hyperprior = Hyperprior()
+        # ssf2020
         self.img_encoder = Encoder(3)
         self.img_decoder = Decoder(3)
         self.img_hyperprior = Hyperprior()
-
+        #
         self.res_encoder = Encoder(3)
         self.res_decoder = Decoder(3, in_planes=384)
         self.res_hyperprior = Hyperprior()
@@ -236,8 +424,22 @@ class ScaleSpaceFlow(nn.Module):
 
     def forward_keyframe(self, x):
         y = self.img_encoder(x)
+        print("here")
+        print(y.shape)  # g_a
+        # exit()
+        np.save('ssf_vimeo_g_a_298_192_24_24_3', y.cpu().detach().numpy())
+        # plt.imshow(y[0].cpu().detach().numpy())
+        # plt.title("y after g_a")
+        # plt.savefig('y after g_a.png')
         y_hat, likelihoods = self.img_hyperprior(y)
+        # print(y_hat.shape) # h_a
+        # exit()
         x_hat = self.img_decoder(y_hat)
+        # print(x_hat.shape)
+        # plt.imshow(x_hat[0][0].cpu().detach().numpy())
+        # plt.title("x_hat after g_s")
+        # plt.savefig('x_hat after g_s.png')
+        # exit()
         return x_hat, {"keyframe": likelihoods}
 
     def encode_keyframe(self, x):
@@ -266,6 +468,7 @@ class ScaleSpaceFlow(nn.Module):
         # residual
         x_res = x_cur - x_pred
         y_res = self.res_encoder(x_res)
+
         y_res_hat, res_likelihoods = self.res_hyperprior(y_res)
 
         # y_combine
@@ -481,6 +684,11 @@ class ScaleSpaceFlow(nn.Module):
     @classmethod
     def from_state_dict(cls, state_dict):
         """Return a new model instance from `state_dict`."""
+        # net = cls()
+        # net.load_state_dict(state_dict)
+        # print(state_dict.keys())
+        # exit()
+        # N = state_dict["g_a.0.conv1.weight"].size(0)
         net = cls()
         net.load_state_dict(state_dict)
         return net
