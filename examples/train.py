@@ -481,7 +481,7 @@ def train_one_epoch(
           f"\tBpp loss: {bpp_loss_list.avg:.2f} |"
           f"\tAux loss: {aux_loss_list.avg:.2f}")
     # print(mse_loss_list)
-    print('epoch {} test loss: {}'.format(epoch, loss_list.avg))
+    print('epoch {} train loss: {}'.format(epoch, loss_list.avg))
     print('learning rate: {}'.format(optimizer.param_groups[0]['lr']))
     print('mse loss:', mse_loss_list.avg)
     print('target y loss:', mse_target_y_loss_list.avg)
@@ -539,7 +539,7 @@ def test_epoch(epoch, test_dataloader, model, criterion, log_dir=None):
         f"\tBpp loss: {bpp_loss.avg:.2f} |"
         f"\tAux loss: {aux_loss.avg:.2f}\n"
     )
-    print('epoch {} train loss: {}'.format(epoch, loss.avg))
+    print('epoch {} test loss: {}'.format(epoch, loss.avg))
     print('mse loss:', mse_loss.avg)
     print('bpp loss:', bpp_loss.avg)
 
@@ -658,7 +658,7 @@ def main(argv):
     )
     for name, param in net.named_parameters():
         print(name, ':', param.shape)
-    sleep
+    # sleep
     print('total param #:', total_params)
     trainable_params = sum(
         p.numel() for p in net.parameters() if p.requires_grad

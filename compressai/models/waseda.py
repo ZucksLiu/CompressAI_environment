@@ -36,6 +36,7 @@ from compressai.layers import (
     ResidualBlockUpsample,
     ResidualBlockWithStride,
     conv3x3,
+    conv1x1,
     subpel_conv3x3,
 )
 
@@ -234,22 +235,20 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
         )
 
         self.m_a = nn.Sequential(
-            conv3x3(N+8, N), # do not change size: 16
+            nn.InstanceNorm2d(N),            
+            conv1x1(N+8, N), # do not change size: 16
             nn.LeakyReLU(inplace=True),
-            conv3x3(N, N), # do not change size: 16
-            nn.LeakyReLU(inplace=True),
-            conv3x3(N, N), # /2: 8
-            nn.LeakyReLU(inplace=True),
-            conv3x3(N, N),
-            nn.LeakyReLU(inplace=True),
-            conv3x3(N, N), # /2: 4
+            nn.InstanceNorm2d(N, affine=True),
+            ResidualBlock(N, N),
+            conv1x1(N, N), # do not change size: 16
         )
         self.n_a =  nn.Sequential(
-            conv3x3(N+8, N), # do not change size: 16
+            conv1x1(N+8, N), # do not change size: 16
             nn.LeakyReLU(inplace=True),
-            conv3x3(N, N), # do not change size: 16
-            nn.LeakyReLU(inplace=True),
-            conv3x3(N, N), # /2: 8
+            nn.InstanceNorm2d(N, affine=True),
+            ResidualBlock(N, N),
+            # nn.InstanceNorm2d(N, affine=True),
+            conv1x1(N, N), # do not change size: 16
         )
         self.mask_pooling_y = nn.Sequential(
             nn.AvgPool2d(2, stride=2),
@@ -291,7 +290,7 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
         # sleep
 
         z_hat, z_likelihoods = self.entropy_bottleneck(z)
-        z_hat = (z_hat + hat_target_z) * 0.5
+        # z_hat = (z_hat + hat_target_z) * 0.5
         params = self.h_s(z_hat)
 
         y_hat = self.gaussian_conditional.quantize(
@@ -309,7 +308,7 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
         # print(scales_hat.shape, means_hat.shape)
         # sleep
         _, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
-        y_hat = y_hat * 0.5 + hat_target_y * 0.5
+        # y_hat = y_hat * 0.5 + hat_target_y * 0.5
         # torch.zeros(5).uniform_(-0.5,0.5) = torch.
         x_hat = self.g_s(y_hat)
         # print(x_hat.shape)
@@ -348,7 +347,22 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
             # plt.title("cheng2020 after g_a x")
             # plt.savefig('x after g_a.png')
 
+            # mean_y = torch.mean(y, dim=[0,2,3], keepdim=True)
+            # std_y = torch.std(y, dim=[0,2,3], keepdim=True)
+            # print('y mean:', mean_y) 
+            # print('y std:', std_y)
+
             z = self.h_a(y)
+            # mean_z = torch.mean(z, dim=[0,2,3], keepdim=True)
+            # std_z = torch.std(z, dim=[0,2,3], keepdim=True)
+            # print('z mean:', mean_z)
+            # print('z std:', std_z)
+            
+            # print(mean_y.shape, std_y.shape)
+            # print(mean_z.shape, std_z.shape)
+            # sleep
+
+
             # print(z.shape)
             # z_name = 'h_a_63_192_12_23_1'
             # np.save(z_name, z.cpu().detach().numpy())

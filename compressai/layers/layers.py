@@ -47,6 +47,7 @@ __all__ = [
     "conv3x3",
     "subpel_conv3x3",
     "QReLU",
+    "conv1x1",
 ]
 
 
