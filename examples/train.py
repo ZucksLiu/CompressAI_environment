@@ -23,15 +23,12 @@ from torch.utils.data import ConcatDataset
 import torch
 import numpy as np
 from compressai.layers.layers import PositionalEmbedding  
+# import tqdm
 # from maskedtensor import masked_tensor
 # from maskedtensor import as_masked_tensor
 # p_min = [-0.81310266, -0.0005704858, -26.1313]
 # max_min = [28.265799+0.81310266, 35.88579+0.0005704858, 825.0345+26.1313]
 
-time_year_embedding = PositionalEmbedding(d_model=64, max_len=64)
-time_month_embedding = PositionalEmbedding(d_model=64, max_len=12, constant=8888)
-lati_embedding = PositionalEmbedding(d_model=4, max_len=722, constant=6666)
-long_embedding = PositionalEmbedding(d_model=4, max_len=1441, constant=7777)
 
 def time_index_to_year_month(all_time_index):
     all_year = all_time_index // 12
@@ -106,13 +103,12 @@ def fetch_target_data(time_index, dataset_index, left_list, top_list, concat_dat
     target_data = torch.cat([target_data[i, :, left_list[i]: left_list[i] + lati_res, top_list[i]: top_list[i] + long_res].unsqueeze(0) for i in range(bs)], dim=0)
     return target_data, new_time_index
 
-    
-    
-    
-    
 
-    
 
+time_year_embedding = PositionalEmbedding(d_model=64, max_len=64)
+time_month_embedding = PositionalEmbedding(d_model=64, max_len=12, constant=8888)
+lati_embedding = PositionalEmbedding(d_model=4, max_len=722, constant=7777)
+long_embedding = PositionalEmbedding(d_model=4, max_len=1441, constant=6666)
 
 # grid_location_embedding_padding = construct_location_embedding_padding(long_embedding, lati_embedding, 0, 0, long_res=3, lat_res=3, long_dim=4, lat_dim=4,padding_direction=[1,2,3,4])
 # batch_location_embedding(grid_location_embedding_padding, torch.tensor([0, 1, 2]), torch.tensor([0, 1, 2]), lat_res=4, long_res=4, loc_res=8)
@@ -165,6 +161,42 @@ class RateDistortionLoss(nn.Module):
         ts_hat = torch.mul(target[:, 0, :, :], target[:, 1, :, :])
         out["temp_salt_mse"] = self.mse(ts, ts_hat)
         return out
+
+class RateDistortionLoss_cond_mapping(nn.Module):
+    """Custom rate distortion loss with a Lagrangian parameter."""
+
+    def __init__(self, lmbda=1e-2):
+        super().__init__()
+        self.mse = nn.MSELoss()
+        self.lmbda = lmbda
+
+    def forward(self, output, target):
+        N, _, H, W = target.size()
+        out = {}
+        num_pixels = N * H * W
+
+        out["bpp_loss"] = sum(
+            (torch.log(likelihoods).sum() / (-math.log(2) * num_pixels))
+            for likelihoods in output["likelihoods"].values()
+        )
+        out["mse_loss"] = self.mse(output["x_hat"], target)
+        out["predict_z_loss"] = self.mse(output["hat_target_z"], output["target_z"])
+        out["predict_y_loss"] = self.mse(output["hat_target_y"], output["target_y"])
+
+        out["loss"] = self.lmbda * 255 **2 * (out["mse_loss"] + 0.1 * (out["predict_y_loss"] + out["predict_z_loss"])) + out["bpp_loss"]
+
+        out["temp_mse"] = self.mse(output["x_hat"][:, 0, :, :], target[:, 0, :, :])
+        out["salt_mse"] = self.mse(output["x_hat"][:, 1, :, :], target[:, 1, :, :])
+        out["zeta_mse"] = self.mse(output["x_hat"][:, 2, :, :], target[:, 2, :, :])
+        ts = torch.mul(output["x_hat"][:, 0, :, :], output["x_hat"][:, 1, :, :])
+        ts_hat = torch.mul(target[:, 0, :, :], target[:, 1, :, :])
+        out["temp_salt_mse"] = self.mse(ts, ts_hat)
+        return out
+
+
+
+
+
 
 def log(filename: str, text: str):
     f = open(filename, 'a')
@@ -232,7 +264,7 @@ def configure_optimizers(net, args):
 
 
 def train_one_epoch(
-    model, criterion, train_dataloader, optimizer, aux_optimizer, epoch, clip_max_norm, concat_dataset_train=None
+    model, criterion, train_dataloader, optimizer, aux_optimizer, epoch, clip_max_norm, concat_dataset_train=None, log_dir=None
 ):
     model.train()
     device = next(model.parameters()).device
@@ -245,6 +277,9 @@ def train_one_epoch(
     salt_mse_list = AverageMeter()
     temp_salt_mse_list = AverageMeter()
     zeta_mse_list =AverageMeter()
+
+    mse_target_y_loss_list = AverageMeter()
+    mse_target_z_loss_list = AverageMeter()    
 
     zero_counts_distribution = torch.zeros(12)
     padding = [16, 16, 23, 24]
@@ -261,7 +296,7 @@ def train_one_epoch(
             mode="constant",
             value=0,
         )
-        print(d.shape)
+        # print(d.shape)
         # new_h = (h + p - 1) // p * p
         # new_w = (w + p - 1) // p * p
         # padding_left = (new_w - w) // 2
@@ -282,16 +317,19 @@ def train_one_epoch(
         patch_sizes = [256]
         patch_size = np.random.choice(patch_sizes, 1)[0]
         # # print(h-patch_size+1)
-        left = torch.randint(0, h-patch_size+1+idx_left, size=(1,)).item()
-        top = torch.randint(0, w-patch_size+1+idx_top, size=(1,)).item()
+
+        # left = torch.randint(0, h-patch_size+1+idx_left, size=(1,)).item()
+        # top = torch.randint(0, w-patch_size+1+idx_top, size=(1,)).item()
         left_list = torch.randint(0, h-patch_size+1+idx_left, size=(bs,))
         top_list = torch.randint(0, w-patch_size+1+idx_top, size=(bs,))
         # print(left_list)
         # print(top_list)
         # print(left, top)
         # sleep
-        right_list = left_list + patch_size
-        bottom_list = top_list + patch_size
+
+        # right_list = left_list + patch_size
+        # bottom_list = top_list + patch_size
+        
         # d = d[:, :, left:right, top:bottom]
         # d = crop(d, left,top, patch_size, patch_size)
         loc_emb = batch_location_embedding(grid_location_embedding_padding, left_list, top_list, lat_res=patch_size, long_res=patch_size, loc_res=8)
@@ -304,8 +342,8 @@ def train_one_epoch(
         # print(target_data.shape)
         d_time_embedding = fetch_time_embedding(time_index, all_time_index_embedding)
         target_data_time_embedding = fetch_time_embedding(new_time_index, all_time_index_embedding)        
-        print(d_time_embedding.shape)
-        print(target_data_time_embedding.shape)
+        # print(d_time_embedding.shape)
+        # print(target_data_time_embedding.shape)
         # sleep
         d = d.float().to(device)
         target_data = target_data.float().to(device)
@@ -317,7 +355,8 @@ def train_one_epoch(
 
         out_net = model(d, target_x=target_data, x_time_embedding=d_time_embedding, target_x_time_embedding=target_data_time_embedding, loc_mask=loc_emb, flag=1)
         # print(d[0, 0, :, :])
-        sleep
+        # sleep
+
         # n = d.cpu().numpy().flatten()
         # print(np.count_nonzero(n > 1))
         # plt.hist(n)
@@ -395,13 +434,21 @@ def train_one_epoch(
         zeta_mse_list.update(out_criterion["zeta_mse"].detach())
         temp_salt_mse_list.update(out_criterion["temp_salt_mse"].detach())
 
+        mse_target_y_loss_list.update(out_criterion["predict_y_loss"].detach())
+        mse_target_z_loss_list.update(out_criterion["predict_z_loss"].detach())
+
+
+
+
         if i % 10 == 0:
             # print(i)
-            log('log.txt',f"Train epoch {epoch}: ["
+            log(log_dir / 'log.txt',f"Train epoch {epoch}: ["
                 f"{i*len(d)}/{len(train_dataloader.dataset)}"
                 f" ({100. * i / len(train_dataloader):.0f}%)]"
                 f'\tLoss: {out_criterion["loss"].item():.3f} |'
                 f'\tMSE loss: {out_criterion["mse_loss"].item():.3f} |'
+                f'\tMSE y loss: {out_criterion["predict_y_loss"].item():.4f} |'
+                f'\tMSE z loss: {out_criterion["predict_z_loss"].item():.4f} |'
                 f'\tBpp loss: {out_criterion["bpp_loss"].item():.2f} |'
                 f"\tAux loss: {aux_loss.item():.2f}")
             # plt.plot(zero_counts_distribution)
@@ -426,18 +473,24 @@ def train_one_epoch(
             #     f'\tBpp loss: {out_criterion["bpp_loss"].item():.2f} |'
             #     f"\tAux loss: {aux_loss.item():.2f}"
             # )
-    log('log.txt', f"Train epoch {epoch}: Average losses:"
+    log(log_dir / 'log.txt', f"Train epoch {epoch}: Average losses:"
           f"\tLoss: {loss_list.avg:.3f} |"
-          f"\tMSE loss: {mse_loss_list.avg:.3f} |"
+          f"\tMSE loss: {mse_loss_list.avg:.8f} |"
+          f'\tMSE y loss: {mse_target_y_loss_list.avg:.6f} |'
+          f'\tMSE z loss: {mse_target_z_loss_list.avg:.6f} |'
           f"\tBpp loss: {bpp_loss_list.avg:.2f} |"
           f"\tAux loss: {aux_loss_list.avg:.2f}")
     # print(mse_loss_list)
-    print(mse_loss_list.avg)
+    print('epoch {} test loss: {}'.format(epoch, loss_list.avg))
+    print('learning rate: {}'.format(optimizer.param_groups[0]['lr']))
+    print('mse loss:', mse_loss_list.avg)
+    print('target y loss:', mse_target_y_loss_list.avg)
+    print('target z loss:', mse_target_z_loss_list.avg)
     # exit()
     return loss_list.avg.item(), mse_loss_list.avg.item(), temp_mse_list.avg.item(), salt_mse_list.avg.item(), zeta_mse_list.avg.item(), temp_salt_mse_list.avg.item()
 
 
-def test_epoch(epoch, test_dataloader, model, criterion):
+def test_epoch(epoch, test_dataloader, model, criterion, log_dir=None):
     model.eval()
     device = next(model.parameters()).device
     loss = AverageMeter()
@@ -450,8 +503,12 @@ def test_epoch(epoch, test_dataloader, model, criterion):
     zeta_mse_list = AverageMeter()
     temp_salt_mse_list = AverageMeter()
 
+    # mse_y_loss = AverageMeter()
+    # mse_z_loss = AverageMeter()
+
     with torch.no_grad():
         for d in test_dataloader:
+            d, time_index, dataset_index = d
             d = d.float()
             # d = d + 0.1
             # d[d > 1.1] = 0
@@ -467,17 +524,25 @@ def test_epoch(epoch, test_dataloader, model, criterion):
             bpp_loss.update(out_criterion["bpp_loss"].detach())
             loss.update(out_criterion["loss"].detach())
             mse_loss.update(out_criterion["mse_loss"].detach())
+            # mse_y_loss.update(out_criterion["predict_y_loss"].detach())
+            # mse_z_loss.update(out_criterion["predict_z_loss"].detach())
             temp_mse_list.update(out_criterion["temp_mse"].detach())
             salt_mse_list.update(out_criterion["salt_mse"].detach())
             zeta_mse_list.update(out_criterion["zeta_mse"].detach())
             temp_salt_mse_list.update(out_criterion["temp_salt_mse"].detach())
 
-    log('log.txt', f"Test epoch {epoch}: Average losses:"
+    log(log_dir / 'log.txt', f"Test epoch {epoch}: Average losses:"
         f"\tLoss: {loss.avg:.3f} |"
-        f"\tMSE loss: {mse_loss.avg:.3f} |"
+        f"\tMSE loss: {mse_loss.avg:.8f} |"
+        # f"\tMSE y loss: {mse_y_loss.avg:.3f} |"
+        # f"\tMSE z loss: {mse_z_loss.avg:.3f} |"
         f"\tBpp loss: {bpp_loss.avg:.2f} |"
         f"\tAux loss: {aux_loss.avg:.2f}\n"
     )
+    print('epoch {} train loss: {}'.format(epoch, loss.avg))
+    print('mse loss:', mse_loss.avg)
+    print('bpp loss:', bpp_loss.avg)
+
 
     return loss.avg.item(), mse_loss.avg.item(), temp_mse_list.avg.item(), salt_mse_list.avg.item(), zeta_mse_list.avg.item(), temp_salt_mse_list.avg.item()
 
@@ -504,14 +569,14 @@ def parse_args(argv):
     parser.add_argument(
         "-e",
         "--epochs",
-        default=100,
+        default=800,
         type=int,
         help="Number of epochs (default: %(default)s)",
     )
     parser.add_argument(
         "-lr",
         "--learning-rate",
-        default=1e-7,
+        default=1e-4,
         type=float,
         help="Learning rate (default: %(default)s)",
     )
@@ -526,7 +591,7 @@ def parse_args(argv):
         "--lambda",
         dest="lmbda",
         type=float,
-        default=1e-2,
+        default=0.8,
         help="Bit-rate distortion parameter (default: %(default)s)",
     )
     parser.add_argument(
@@ -565,7 +630,7 @@ def parse_args(argv):
     )
     parser.add_argument("--checkpoint", type=str, help="Path to a checkpoint")
     parser.add_argument("--channel", action="store_true", default =False, help="change the third channel to temp multiply slat")
-    parser.add_argument("--dir", type=str, help="Exported model directory.")
+    parser.add_argument("--dir", type=str, default='./models/cheng2020-anchor-transfer/', help="Exported model directory.")
     args = parser.parse_args(argv)
     return args
 
@@ -583,24 +648,43 @@ def main(argv):
     # print(y.shape)
     # exit()
     args = parse_args(argv)
-    net = image_models[args.model](quality=6)
-    # print(net)
+    net = image_models[args.model](quality=6, combine=True)
+    print_net = True
+    if print_net:
+        print('The network architecture:')
+        print(net)
     total_params = sum(
         param.numel() for param in net.parameters()
     )
-    print(total_params)
+    for name, param in net.named_parameters():
+        print(name, ':', param.shape)
+    sleep
+    print('total param #:', total_params)
     trainable_params = sum(
         p.numel() for p in net.parameters() if p.requires_grad
     )
-    print(trainable_params)
-    # exit()
-    # exit()
+    print('trainable param #:', trainable_params)
+
     # f_n = "log_epoch" + str(args.epochs) +"_lambda_" + str(args.lmbda)
     # print(f_n)
     # exit()
     # f = open(f_n, 'w')
     # f.write(str(argv)+"\n")
     # f.close()
+
+    if args.dir is not None:
+        output_dir = Path(args.dir)
+        # print(output_dir)
+        # print(Path.cwd())
+        # print(Path.cwd() / output_dir)
+        output_dir = Path.cwd() / args.dir
+        # print(output_dir)
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+    else:
+        output_dir = Path.cwd()
+    print('output_dir:', output_dir)
+    log(output_dir / 'log.txt', f"Training started with args: {args}")
+    # sleep
     if args.seed is not None:
         torch.manual_seed(args.seed)
         random.seed(args.seed)
@@ -621,12 +705,13 @@ def main(argv):
     # train_data1 = np.load("/data/zixinl6/downscaling/wind_train_tu_681_3_721_1440.npy")
     # train_data2 = np.load("/data/zixinl6/downscaling/wind_train_tv_681_3_721_1440.npy")
     # train_data = np.load("/data/zixinl6/downscaling/train_7693_3_1302_663.npy")
-    train_data1 = np.load('/data/zixinl6/downscaling/wind_tu_756_3_721_1440.npy')
-    train_data2 = np.load('/data/zixinl6/downscaling/wind_tv_756_3_721_1440.npy')
+    train_data1 = np.load('/efs/users/zucksliu/env_project/wind_dataset/wind_tu_756_3_721_1440.npy')
+    train_data2 = np.load('/efs/users/zucksliu/env_project/wind_dataset/wind_tv_756_3_721_1440.npy')
     # train_data = np.load("/data/zixinl6/downscaling/valid1_92_3_1302_663.npy")
     # test_data = np.load("/data/zixinl6/downscaling/test_float16_876_3_1302_663.npy")
-    test_data1 = np.load("/data/zixinl6/downscaling/wind_test_tu_75_3_721_1440.npy")
-    test_data2 = np.load("/data/zixinl6/downscaling/wind_test_tv_75_3_721_1440.npy")
+    test_data1 = np.load("/efs/users/zucksliu/env_project/wind_dataset/wind_test_tu_75_3_721_1440.npy")
+    test_data2 = np.load("/efs/users/zucksliu/env_project/wind_dataset/wind_test_tv_75_3_721_1440.npy")
+
     # test_data = np.load("/data/zixinl6/downscaling/test_876_3_1302_663.npy")
     # print(train_data.dtype)
     # tr = torch.tensor(train_data)
@@ -659,6 +744,11 @@ def main(argv):
     # exit()
     # print(tr.shape)
 
+    device = 'cuda:0' if args.cuda and torch.cuda.is_available() else "cpu"
+    print(device)
+
+    net = net.to(device)
+
     train_transforms1 = transforms.Compose(
         [transforms.Normalize(p_min1, max_min1)]
     )
@@ -682,16 +772,16 @@ def main(argv):
 
     train_dataset1 = CustomTensorDataset(tr1, transforms = train_transforms1, dataset_index=0)
     train_dataset2 = CustomTensorDataset(tr2, transforms = train_transforms2, dataset_index=1)
-
-
     # train_dataset = CustomTensorDataset(tr, transforms = [train_transforms1,train_transforms2, train_transforms3], prob=[10, 30, 60])
     # print(train_dataset.tensors)
-    test_dataset1 = CustomTensorDataset(te1, transforms = test_transforms1)
-    test_dataset2 = CustomTensorDataset(te2, transforms=test_transforms2)
-    device = 'cuda:2' if args.cuda and torch.cuda.is_available() else "cpu"
-    print(device)
+
     train_dataset = [train_dataset1, train_dataset2]
     concat_dataset_train = ConcatDataset(train_dataset)
+
+    test_dataset1 = CustomTensorDataset(te1, transforms = test_transforms1)
+    test_dataset2 = CustomTensorDataset(te2, transforms=test_transforms2)
+
+
 
     train_dataloader = DataLoader(
         concat_dataset_train,
@@ -711,17 +801,15 @@ def main(argv):
         shuffle=False,
         pin_memory=(device == device),
     )
-    net = image_models[args.model](quality=6)
-    # print(net)
-    # exit()
-    net = net.to(device)
+
     #quality = 6
     if args.cuda and torch.cuda.device_count() > 1:
-        net = CustomDataParallel(net, device_ids=[2, 3])
+        net = CustomDataParallel(net, device_ids=[0, 1, 2, 3])
 
     optimizer, aux_optimizer = configure_optimizers(net, args)
     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
-    criterion = RateDistortionLoss(lmbda=args.lmbda)
+    criterion_test = RateDistortionLoss(lmbda=args.lmbda)
+    criterion = RateDistortionLoss_cond_mapping(lmbda=args.lmbda)
 
     last_epoch = 0
     train_loss = []
@@ -751,8 +839,13 @@ def main(argv):
     z_t_list = []
     t_s_t_list = []
     test_mse_loss = []
+    print('First test loaded model as a reference...')
+    log(output_dir / 'log.txt', f"First test loaded model as a reference...")
+    test_epoch(-1, test_dataloader, net, criterion_test, log_dir=output_dir)
     for epoch in range(last_epoch, args.epochs):
-        log('log.txt', f"Learning rate: {optimizer.param_groups[0]['lr']}")
+        # if epoch == 1:
+        #     exit()
+        log(output_dir / 'log.txt', f"Learning rate: {optimizer.param_groups[0]['lr']}")
         out_cri, mse, temp_mse, salt_mse, zeta_mse, temp_salt_mse = train_one_epoch(
             net,
             criterion,
@@ -761,19 +854,20 @@ def main(argv):
             aux_optimizer,
             epoch,
             args.clip_max_norm,
-            concat_dataset_train
+            concat_dataset_train,
+            log_dir=output_dir
         )
-        exit()
 
-        train_loss.append(out_cri)
-        train_mse.append(mse)
-        temp_list.append(temp_mse)
-        salt_list.append(salt_mse)
-        zeta_list.append(zeta_mse)
-        temp_salt_list.append(temp_salt_mse)
+
+        # train_loss.append(out_cri)
+        # train_mse.append(mse)
+        # temp_list.append(temp_mse)
+        # salt_list.append(salt_mse)
+        # zeta_list.append(zeta_mse)
+        # temp_salt_list.append(temp_salt_mse)
 
         # train_mse_loss.append(out_cri['mse_loss'].item())
-        loss, mse_t, temp_mse_t, salt_mse_t, zeta_mse_t, temp_salt_mse_t = test_epoch(epoch, test_dataloader, net, criterion)
+        loss, mse_t, temp_mse_t, salt_mse_t, zeta_mse_t, temp_salt_mse_t = test_epoch(epoch, test_dataloader, net, criterion_test, log_dir=output_dir)
         lr_scheduler.step(loss)
 
         test_loss.append(loss)
@@ -792,7 +886,7 @@ def main(argv):
             plt.ylabel('loss')
             plt.legend(['Train', 'Test'])
             plt.title("loss-epoch")
-            p_n = f"loss-epoch{epoch}.png"
+            p_n = output_dir / f"loss-epoch{epoch}.png"
             plt.show()
             plt.savefig(p_n)
 
@@ -818,7 +912,7 @@ def main(argv):
 
 
         #save model every 50 epoches and the last epoch:
-        if epoch % 25 == 0 or epoch == args.epochs - 1:
+        if epoch % 50 == 0 or epoch == args.epochs - 1:
             # f_n = f"ocean_quality6_cheng2020_epoch_{epoch}.pth.tar"
             if args.dir is not None:
                 output_dir = Path(args.dir)
@@ -833,26 +927,27 @@ def main(argv):
                     "epoch": epoch,
                     "state_dict": net.state_dict(),
                     "loss": loss,
+                    "lambda": args.lmbda,
                     "optimizer": optimizer.state_dict(),
                     "aux_optimizer": aux_optimizer.state_dict(),
                     "lr_scheduler": lr_scheduler.state_dict(),
                 },
                 is_best, filename=filepath
             )
-            np.save("train_loss.npy", train_loss)
-            np.save("train_mse.npy", train_mse)
-            np.save("train_temp_mse.npy", temp_list)
-            np.save("train_salt_mse.npy", salt_list)
-            np.save("train_zeta_mse.npy", zeta_list)
-            np.save("train_temp_salt.npy", temp_salt_list)
+            np.save(output_dir / "train_loss.npy", train_loss)
+            np.save(output_dir / "train_mse.npy", train_mse)
+            np.save(output_dir / "train_temp_mse.npy", temp_list)
+            np.save(output_dir / "train_salt_mse.npy", salt_list)
+            np.save(output_dir / "train_zeta_mse.npy", zeta_list)
+            np.save(output_dir / "train_temp_salt.npy", temp_salt_list)
 
-            np.save("test_loss.npy", test_loss)
-            np.save('test_total_mse.npy', test_mse_loss)
-            np.save("test_temp_mse.npy", t_t_list)
-            np.save("test_salt_mse.npy",s_t_list)
-            np.save("test_zeta_mse.npy", z_t_list)
-            np.save("test_temp_salt_mse.npy", t_s_t_list)
-
+            np.save(output_dir / "test_loss.npy", test_loss)
+            np.save(output_dir / 'test_total_mse.npy', test_mse_loss)
+            np.save(output_dir / "test_temp_mse.npy", t_t_list)
+            np.save(output_dir / "test_salt_mse.npy",s_t_list)
+            np.save(output_dir / "test_zeta_mse.npy", z_t_list)
+            np.save(output_dir / "test_temp_salt_mse.npy", t_s_t_list)
+            print('Save model epoch {} to {}'.format(epoch, filepath))
 
 
 

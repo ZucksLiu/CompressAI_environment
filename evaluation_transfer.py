@@ -52,7 +52,7 @@ device = 'cuda:2' if torch.cuda.is_available() else 'cpu'
 metric = 'mse'  # only pre-trained model for mse are available for now
 quality = 6    # lower quality -> lower bit-rate (use lower quality to clearly see visual differences in the notebook)
 
-epoch_100 = load_checkpoint('cheng2020-anchor-transfer', '/efs/users/zucksliu/env_project/copied_model_ckpts/cheng2020-anchor-transfer_wind_epoch_100-e1f7430f.pth.tar')
+epoch_100 = load_checkpoint('cheng2020-anchor-transfer', '/efs/users/zucksliu/env_project/compressai/models/cheng2020-anchor-transfer/cheng2020-anchor-transfer_wind_epoch_100-59e07d84.pth.tar')
 networks = {
    'epoch_100': epoch_100.to(device),
 }
@@ -93,8 +93,8 @@ print('grid_location_embedding_padding', grid_location_embedding_padding.shape)
 data_number = 0
 with torch.no_grad():
     for i, d in enumerate(train_dataloader):
-        # if i > 30:
-        #     continue
+        if i > 30:
+            continue
         d, time_index, dataset_index = d
         data_number = i
         d = d.to(torch.float32)
@@ -114,46 +114,46 @@ with torch.no_grad():
         for name, net in networks.items():
             p = 64 
              # maximum 6 strides of 2
-            # new_h = (h + p - 1) // p * p
-            # new_w = (w + p - 1) // p * p
-            new_h = h // p * p
-            new_w = w // p * p
-            # padding_left = (new_w - w) // 2
-            # padding_right = new_w - w - padding_left
-            # padding_top = (new_h - h) // 2
-            # padding_bottom = new_h - h - padding_top
+            new_h = (h + p - 1) // p * p
+            new_w = (w + p - 1) // p * p
+            # new_h = h // p * p
+            # new_w = w // p * p
+            padding_left = (new_w - w) // 2
+            padding_right = new_w - w - padding_left
+            padding_top = (new_h - h) // 2
+            padding_bottom = new_h - h - padding_top
             # print(padding_top, padding_bottom)
             # sleep
-            # x_padded = F.pad(d, (padding_left, padding_right, padding_top, padding_bottom),
-                # mode="constant", value=0)
-            x_padded = d[:, :, :new_h, :new_w]
+            x_padded = F.pad(d, (padding_left, padding_right, padding_top, padding_bottom),
+                mode="constant", value=0)
+            # x_padded = d[:, :, :new_h, :new_w]
             left_list, top_list = torch.zeros(bs, dtype=int), torch.zeros(bs, dtype=int)
             left_list = left_list + 16
             top_list = top_list + 23
-            loc_emb = batch_location_embedding(grid_location_embedding_padding, left=left_list, top=top_list,
-                                               long_res=new_w, lat_res=new_h, loc_res=8)
-            # loc_emb = grid_location_embedding_padding
+            # loc_emb = batch_location_embedding(grid_location_embedding_padding, left=left_list, top=top_list,
+                                            #    long_res=new_w, lat_res=new_h, loc_res=8)
+            loc_emb = grid_location_embedding_padding
             loc_emb = loc_emb.expand(bs, loc_emb.size(1), loc_emb.size(2), loc_emb.size(3))
             loc_emb = torch.permute(loc_emb, (0, 3, 1, 2))
             # print(x_padded.shape, loc_emb.shape)
             # print(loc_emb.shape)
             # sleep
 
-            x_anchor = x_padded[time_index % 2 == 0]
-            target_x = x_padded[time_index % 2 == 1]
-            anchor_time_index = time_index[time_index % 2 == 0]
-            new_time_index = time_index[time_index % 2 == 1]
+            # x_anchor = x_padded[time_index % 2 == 0]
+            # target_x = x_padded[time_index % 2 == 1]
+            # anchor_time_index = time_index[time_index % 2 == 0]
+            # new_time_index = time_index[time_index % 2 == 1]
 
-            loc_emb_anchor = loc_emb[(time_index % bs) % 2 == 0]
-            loc_emb_target = loc_emb[(time_index % bs) % 2 == 1]
+            # loc_emb_anchor = loc_emb[(time_index % bs) % 2 == 0]
+            # loc_emb_target = loc_emb[(time_index % bs) % 2 == 1]
 
-            # x_anchor = x_padded[:12]
-            # target_x = x_padded[12:]
-            # anchor_time_index = time_index[:12]
-            # new_time_index = time_index[12:]
+            x_anchor = x_padded[:12]
+            target_x = x_padded[12:]
+            anchor_time_index = time_index[:12]
+            new_time_index = time_index[12:]
 
-            # loc_emb_anchor = loc_emb[:12]
-            # loc_emb_target = loc_emb[12:]
+            loc_emb_anchor = loc_emb[:12]
+            loc_emb_target = loc_emb[12:]
 
 
 
@@ -204,10 +204,18 @@ with torch.no_grad():
             # print(rv['recover_x_hat'][:, 0, :, :])
             # print(rv['recover_target_x_hat'][:, 0, :, :])
             # sleep
-            left_index = 0
-            right_index = new_h
-            top_index = 0
-            bottom_index = new_w
+
+
+            # left_index = 0
+            # right_index = new_h
+            # top_index = 0
+            # bottom_index = new_w
+
+            left_index = padding_left
+            right_index = padding_left + h
+            top_index = padding_top
+            bottom_index = padding_top + w
+
             metrics[name]['temp_mse'] += mse(ori_x[:, 0, left_index:right_index, top_index:bottom_index],
                                              rv['recover_x_hat'][:, 0, left_index:right_index, top_index:bottom_index])
             metrics[name]['salt_mse'] += mse(ori_x[:, 1, left_index:right_index, top_index:bottom_index],

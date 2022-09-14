@@ -263,8 +263,8 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
         )
 
     def conditional_mapping(self, x, target_x, x_time_embedding, target_x_time_embedding, loc_mask):
-        print('mapping')
-        print(x.shape)
+        # print('mapping')
+        # print(x.shape)
         y = self.g_a(x)
         z = self.h_a(y)
 
@@ -275,19 +275,19 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
         concat_time_embedding = self.m_a_time(concat_time_embedding) # (bs, N)
         concat_time_embedding = concat_time_embedding.unsqueeze(-1).unsqueeze(-1) # (bs, N, 1, 1)
 
-        print(loc_mask.shape)
+        # print(loc_mask.shape)
         loc_mask_y = self.mask_pooling_y(loc_mask)
         loc_mask_z = self.mask_pooling_z(loc_mask_y)
-        print(loc_mask_y.shape)
-        print(loc_mask_z.shape)
+        # print(loc_mask_y.shape)
+        # print(loc_mask_z.shape)
         y = y + concat_time_embedding
         z = z + concat_time_embedding
         concat_y = torch.cat([y, loc_mask_y], dim=1)
         concat_z = torch.cat([z, loc_mask_z], dim=1)
         hat_target_y = self.m_a(concat_y)
         hat_target_z = self.n_a(concat_z)
-        print(concat_y.shape, concat_z.shape)
-        print(hat_target_y.shape, hat_target_z.shape)
+        # print(concat_y.shape, concat_z.shape)
+        # print(hat_target_y.shape, hat_target_z.shape)
         # sleep
 
         z_hat, z_likelihoods = self.entropy_bottleneck(z)
@@ -312,7 +312,7 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
         y_hat = y_hat * 0.5 + hat_target_y * 0.5
         # torch.zeros(5).uniform_(-0.5,0.5) = torch.
         x_hat = self.g_s(y_hat)
-        print(x_hat.shape)
+        # print(x_hat.shape)
         # plt.imshow(x_hat[0][0].cpu().detach().numpy())
         # plt.title("cheng2020 x_hat after g_s")
         # plt.savefig('x_hat after g_s.png')

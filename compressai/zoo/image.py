@@ -27,6 +27,7 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from os import stat
 from torch.hub import load_state_dict_from_url
 
 from compressai.models import (
@@ -297,31 +298,32 @@ def _load_model(
         state_dict = load_pretrained(state_dict)
         model = model_architectures[architecture].from_state_dict(state_dict)
         return model
+    print('Load previous model is: ', combine)
     if combine:
-        path = '/data/zixinl6/Compress/compressai2/ocean_quality6_cheng2020_epoch_999.pth.tar'
+        path = '/efs/users/zucksliu/env_project/copied_model_ckpts/ocean_quality6_cheng2020_epoch_999.pth.tar'
         state_dict = torch.load(path)['state_dict']
         state_dict = load_pretrained(state_dict)
-        # key_list = [ "m_a_time.0.weight", "m_a_time.0.bias", "m_a_time.2.weight", "m_a_time.2.bias", "m_a.0.weight", "m_a.0.bias", "m_a.2.weight", "m_a.2.bias", "m_a.4.weight", "m_a.4.bias", "m_a.6.weight", "m_a.6.bias", "m_a.8.weight", "m_a.8.bias", "n_a.0.weight", "n_a.0.bias", "n_a.2.weight", "n_a.2.bias", "n_a.4.weight", "n_a.4.bias"]
-        # for i in key_list:
-        #     if i == "m_a_time.0.weight":
-        #         state_dict[i] = torch.zeros((192, 128))
-        #     if i == "m_a_time.2.weight":
-        #         state_dict[i] = torch.zeros((192, 128))
-        #     else:
-        #         state_dict[i] = None
-        # print(state_dict)
-        # state_dict['m_a_time.0.weight']=None
-        print(architecture)
+        # print((state_dict[list(state_dict.keys())[1]]).device) # cuda:0
+        
+
+        print('model name:', architecture)
         model = model_architectures[architecture](*cfgs[architecture][quality], **kwargs)
         # print(model)
         model.load_state_dict(state_dict, strict=False)
-        # model = model_architectures[architecture].from_state_dict(state_dict)
-        # model = model_architectures[architecture](*cfgs[architecture][quality], **kwargs)
-        # print(model)
-        # print(model['state_dict'])
-        # exit()
-        print('load pretrained model')
-        sleep
+
+        print('load pretrained model ...')
+        cnt = 0
+        for key, value in state_dict.items():
+            # print(key)
+            # print(value) 
+            # print(model.state_dict()[key])
+            assert torch.equal(value.cpu(), model.state_dict()[key])
+            cnt += 1
+        # print(cnt, len(state_dict))
+        assert cnt == len(state_dict)
+            # print(check_if_model_load_correct['state_dict'][key].shape)
+        print('load pretrained model successfully')
+        # sleep
         return model
     print('not pretrained')
     model = model_architectures[architecture](*cfgs[architecture][quality], **kwargs)
@@ -482,7 +484,6 @@ def cheng2020_anchor_transfer(quality, metric="mse", pretrained=False, progress=
 
     if quality < 1 or quality > 6:
         raise ValueError(f'Invalid quality "{quality}", should be between (1, 6)')
-    print(combine)
     # sleep 
     return _load_model(
         "cheng2020-anchor-transfer", metric, quality, pretrained, progress, combine, **kwargs
