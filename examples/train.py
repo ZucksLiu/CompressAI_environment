@@ -183,6 +183,9 @@ class RateDistortionLoss_cond_mapping(nn.Module):
         out["predict_z_loss"] = self.mse(output["hat_target_z"], output["target_z"])
         out["predict_y_loss"] = self.mse(output["hat_target_y"], output["target_y"])
 
+        out["predict_same_z_loss"] = self.mse(output["hat_same_z"], output["target_z"])
+        out["predict_same_y_loss"] = self.mse(output["hat_same_y"], output["target_y"])
+
         out["loss"] = self.lmbda * 255 **2 * (out["mse_loss"] + 0.1 * (out["predict_y_loss"] + out["predict_z_loss"])) + out["bpp_loss"]
 
         out["temp_mse"] = self.mse(output["x_hat"][:, 0, :, :], target[:, 0, :, :])

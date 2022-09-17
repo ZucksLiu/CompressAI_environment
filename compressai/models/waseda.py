@@ -236,20 +236,21 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
 
         self.m_a = nn.Sequential(
             # nn.InstanceNorm2d(N),            
-            conv1x1(N+8, N), # do not change size: 16
+            conv3x3(N+8, N), # do not change size: 16
             nn.LeakyReLU(inplace=True),
             # nn.InstanceNorm2d(N, affine=True),
             ResidualBlock(N, N),
             ResidualBlock(N, N),
-            conv1x1(N, N), # do not change size: 16
+            ResidualBlock(N, N),
+            conv3x3(N, N), # do not change size: 16
         )
         self.n_a =  nn.Sequential(
-            conv1x1(N+8, N), # do not change size: 16
+            conv3x3(N+8, N), # do not change size: 16
             nn.LeakyReLU(inplace=True),
             # nn.InstanceNorm2d(N, affine=True),
             ResidualBlock(N, N),
             # nn.InstanceNorm2d(N, affine=True),
-            conv1x1(N, N), # do not change size: 16
+            conv3x3(N, N), # do not change size: 16
         )
         self.mask_pooling_y = nn.Sequential(
             nn.AvgPool2d(2, stride=2),
@@ -292,20 +293,32 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
         concat_time_embedding = self.m_a_time(concat_time_embedding) # (bs, N)
         concat_time_embedding = concat_time_embedding.unsqueeze(-1).unsqueeze(-1) # (bs, N, 1, 1)
 
+        concat_same_time_embedding = torch.cat([x_time_embedding, x_time_embedding], dim=1)
+        concat_same_time_embedding = self.m_a_time(concat_same_time_embedding) # (bs, N)
+        concat_same_time_embedding = concat_same_time_embedding.unsqueeze(-1).unsqueeze(-1) # (bs, N, 1, 1)        
+
         # print(loc_mask.shape)
         loc_mask_y = self.mask_pooling_y(loc_mask)
         loc_mask_z = self.mask_pooling_z(loc_mask_y)
         # print(loc_mask_y.shape)
         # print(loc_mask_z.shape)
-        y = y + concat_time_embedding
-        z = z + concat_time_embedding
-        concat_y = torch.cat([y, loc_mask_y], dim=1)
-        concat_z = torch.cat([z, loc_mask_z], dim=1)
+        y_w_time = y + concat_same_time_embedding
+        z_w_time = z + concat_same_time_embedding
+        concat_same_y = torch.cat([y_w_time, loc_mask_y], dim=1)
+        concat_same_z = torch.cat([z_w_time, loc_mask_z], dim=1)        
+        hat_same_y = self.m_a(concat_same_y)
+        hat_same_z = self.n_a(concat_same_z)
+
+        new_y = y + concat_time_embedding
+        new_z = z + concat_time_embedding
+        concat_y = torch.cat([new_y, loc_mask_y], dim=1)
+        concat_z = torch.cat([new_z, loc_mask_z], dim=1)
         hat_target_y = self.m_a(concat_y)
         hat_target_z = self.n_a(concat_z)
         # print(concat_y.shape, concat_z.shape)
         # print(hat_target_y.shape, hat_target_z.shape)
         # sleep
+
 
         z_hat, z_likelihoods = self.entropy_bottleneck(z)
         # z_hat = (z_hat + hat_target_z) * 0.5
@@ -341,6 +354,8 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
             "target_z": target_z,
             "hat_target_y": hat_target_y,
             "hat_target_z": hat_target_z,
+            "hat_same_y": hat_same_y,
+            "hat_same_z": hat_same_z,
         }
         
     def forward(self, x, target_x=None, x_time_embedding=None, target_x_time_embedding=None, loc_mask=None, loc_mask_target=None, flag=0):
