@@ -249,8 +249,10 @@ def configure_optimizers(net, args):
     inter_params = parameters & aux_parameters
     union_params = parameters | aux_parameters
 
+    print(len(union_params), len(inter_params), len(params_dict))
+    print(next(net.g_a.parameters()).requires_grad, next(net.m_a.parameters()).requires_grad)
     assert len(inter_params) == 0
-    assert len(union_params) - len(params_dict.keys()) == 0
+    # assert len(union_params) - len(params_dict.keys()) == 0
 
     optimizer = optim.Adam(
         (params_dict[n] for n in sorted(parameters)),
@@ -748,6 +750,7 @@ def main(argv):
     print(device)
 
     net = net.to(device)
+    net.fix_main_networks()
 
     train_transforms1 = transforms.Compose(
         [transforms.Normalize(p_min1, max_min1)]
@@ -913,6 +916,7 @@ def main(argv):
 
         #save model every 50 epoches and the last epoch:
         if epoch % 50 == 0 or epoch == args.epochs - 1:
+            print('Saving models...')
             # f_n = f"ocean_quality6_cheng2020_epoch_{epoch}.pth.tar"
             if args.dir is not None:
                 output_dir = Path(args.dir)

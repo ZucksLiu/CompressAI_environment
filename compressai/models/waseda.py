@@ -235,17 +235,18 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
         )
 
         self.m_a = nn.Sequential(
-            nn.InstanceNorm2d(N),            
+            # nn.InstanceNorm2d(N),            
             conv1x1(N+8, N), # do not change size: 16
             nn.LeakyReLU(inplace=True),
-            nn.InstanceNorm2d(N, affine=True),
+            # nn.InstanceNorm2d(N, affine=True),
+            ResidualBlock(N, N),
             ResidualBlock(N, N),
             conv1x1(N, N), # do not change size: 16
         )
         self.n_a =  nn.Sequential(
             conv1x1(N+8, N), # do not change size: 16
             nn.LeakyReLU(inplace=True),
-            nn.InstanceNorm2d(N, affine=True),
+            # nn.InstanceNorm2d(N, affine=True),
             ResidualBlock(N, N),
             # nn.InstanceNorm2d(N, affine=True),
             conv1x1(N, N), # do not change size: 16
@@ -260,6 +261,23 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
             nn.AvgPool2d(2, stride=2),
             nn.AvgPool2d(2, stride=2),
         )
+
+
+    def fix_main_networks(self):
+        for p in self.g_a.parameters():
+            p.requires_grad = False
+        for p in self.h_a.parameters():
+            p.requires_grad = False
+        for p in self.g_s.parameters():
+            p.requires_grad = False
+        for p in self.h_s.parameters():
+            p.requires_grad = False
+        for p in self.entropy_parameters.parameters():
+            p.requires_grad = False
+        for p in self.context_prediction.parameters():
+            p.requires_grad = False
+        
+
 
     def conditional_mapping(self, x, target_x, x_time_embedding, target_x_time_embedding, loc_mask):
         # print('mapping')
