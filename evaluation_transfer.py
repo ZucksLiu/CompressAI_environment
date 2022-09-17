@@ -52,7 +52,7 @@ device = 'cuda:2' if torch.cuda.is_available() else 'cpu'
 metric = 'mse'  # only pre-trained model for mse are available for now
 quality = 6    # lower quality -> lower bit-rate (use lower quality to clearly see visual differences in the notebook)
 
-epoch_100 = load_checkpoint('cheng2020-anchor-transfer', '/efs/users/zucksliu/env_project/compressai/models/cheng2020-anchor-transfer/cheng2020-anchor-transfer_wind_epoch_50-a8f8e3c2.pth.tar')
+epoch_100 = load_checkpoint('cheng2020-anchor-transfer', '/efs/users/zucksliu/env_project/compressai/models/cheng2020-anchor-transfer/cheng2020-anchor-transfer_wind_epoch_50-be103c48.pth.tar')
 # new_expr_merge_fix_large_unlink
 networks = {
    'epoch_100': epoch_100.to(device),

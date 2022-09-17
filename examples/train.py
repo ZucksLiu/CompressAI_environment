@@ -183,10 +183,10 @@ class RateDistortionLoss_cond_mapping(nn.Module):
         out["predict_z_loss"] = self.mse(output["hat_target_z"], output["target_z"])
         out["predict_y_loss"] = self.mse(output["hat_target_y"], output["target_y"])
 
-        out["predict_same_z_loss"] = self.mse(output["hat_same_z"], output["target_z"])
-        out["predict_same_y_loss"] = self.mse(output["hat_same_y"], output["target_y"])
+        out["predict_same_z_loss"] = self.mse(output["hat_same_z"], output["z"])
+        out["predict_same_y_loss"] = self.mse(output["hat_same_y"], output["y"])
 
-        out["loss"] = self.lmbda * 255 **2 * (out["mse_loss"] + 0.1 * (out["predict_y_loss"] + out["predict_z_loss"])) + out["bpp_loss"]
+        out["loss"] = self.lmbda * 255 **2 * (out["mse_loss"] + 0.1 * (out["predict_y_loss"] + out["predict_z_loss"]) + 0.1 * (out["predict_same_y_loss"] + out["predict_same_z_loss"])) + out["bpp_loss"]
 
         out["temp_mse"] = self.mse(output["x_hat"][:, 0, :, :], target[:, 0, :, :])
         out["salt_mse"] = self.mse(output["x_hat"][:, 1, :, :], target[:, 1, :, :])
@@ -285,6 +285,9 @@ def train_one_epoch(
 
     mse_target_y_loss_list = AverageMeter()
     mse_target_z_loss_list = AverageMeter()    
+
+    mse_same_y_loss_list = AverageMeter()
+    mse_same_z_loss_list = AverageMeter()  
 
     zero_counts_distribution = torch.zeros(12)
     padding = [16, 16, 23, 24]
@@ -441,8 +444,8 @@ def train_one_epoch(
 
         mse_target_y_loss_list.update(out_criterion["predict_y_loss"].detach())
         mse_target_z_loss_list.update(out_criterion["predict_z_loss"].detach())
-
-
+        mse_same_y_loss_list.update(out_criterion["predict_same_y_loss"].detach())
+        mse_same_z_loss_list.update(out_criterion["predict_same_z_loss"].detach())
 
 
         if i % 10 == 0:
@@ -452,8 +455,10 @@ def train_one_epoch(
                 f" ({100. * i / len(train_dataloader):.0f}%)]"
                 f'\tLoss: {out_criterion["loss"].item():.3f} |'
                 f'\tMSE loss: {out_criterion["mse_loss"].item():.3f} |'
-                f'\tMSE y loss: {out_criterion["predict_y_loss"].item():.4f} |'
-                f'\tMSE z loss: {out_criterion["predict_z_loss"].item():.4f} |'
+                f'\tMSE y loss: {out_criterion["predict_y_loss"].item():.6f} |'
+                f'\tMSE z loss: {out_criterion["predict_z_loss"].item():.6f} |'
+                f'\tMSE same y loss: {out_criterion["predict_same_y_loss"].item():.6f} |'
+                f'\tMSE same z loss: {out_criterion["predict_same_z_loss"].item():.6f} |'
                 f'\tBpp loss: {out_criterion["bpp_loss"].item():.2f} |'
                 f"\tAux loss: {aux_loss.item():.2f}")
             # plt.plot(zero_counts_distribution)
@@ -483,6 +488,8 @@ def train_one_epoch(
           f"\tMSE loss: {mse_loss_list.avg:.8f} |"
           f'\tMSE y loss: {mse_target_y_loss_list.avg:.6f} |'
           f'\tMSE z loss: {mse_target_z_loss_list.avg:.6f} |'
+          f'\tMSE same y loss: {mse_same_y_loss_list.avg:.6f} |'
+          f'\tMSE same z loss: {mse_same_z_loss_list.avg:.6f} |'
           f"\tBpp loss: {bpp_loss_list.avg:.2f} |"
           f"\tAux loss: {aux_loss_list.avg:.2f}")
     # print(mse_loss_list)
@@ -491,6 +498,8 @@ def train_one_epoch(
     print('mse loss:', mse_loss_list.avg)
     print('target y loss:', mse_target_y_loss_list.avg)
     print('target z loss:', mse_target_z_loss_list.avg)
+    print('target same y loss:', mse_same_y_loss_list.avg)
+    print('target same z loss:', mse_same_z_loss_list.avg)
     # exit()
     return loss_list.avg.item(), mse_loss_list.avg.item(), temp_mse_list.avg.item(), salt_mse_list.avg.item(), zeta_mse_list.avg.item(), temp_salt_mse_list.avg.item()
 

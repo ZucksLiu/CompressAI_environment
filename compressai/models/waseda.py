@@ -354,6 +354,8 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
             "target_z": target_z,
             "hat_target_y": hat_target_y,
             "hat_target_z": hat_target_z,
+            "y": y,
+            "z": z,
             "hat_same_y": hat_same_y,
             "hat_same_z": hat_same_z,
         }
