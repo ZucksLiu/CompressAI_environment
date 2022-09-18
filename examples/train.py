@@ -84,7 +84,8 @@ def fetch_target_data(time_index, dataset_index, left_list, top_list, concat_dat
     new_time_index = torch.zeros_like(time_index)
     for i in range(bs):
         if sampling_method[sample_list[i]] == "same month":
-            new_time_index[i] = (time_index[i] + torch.randint(1, total_time // 12, size=(1,)).item() * 12) % total_time
+            new_time_index[i] = (time_index[i] + 12) % total_time
+            # new_time_index[i] = (time_index[i] + torch.randint(1, total_time // 12, size=(1,)).item() * 12) % total_time
         elif sampling_method[sample_list[i]] == "neighbour time":
             new_time_index[i] = time_index[i] + torch.randint(-2, 2, size=(1,)).item()
         elif sampling_method[sample_list[i]] == "random":
