@@ -241,8 +241,8 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
             # nn.InstanceNorm2d(N, affine=True),
             ResidualBlock(N, N),
             ResidualBlock(N, N),
-            ResidualBlock(N, N),
-            conv3x3(N, N), # do not change size: 16
+            # ResidualBlock(N, N),
+            conv3x3(N, 2*N), # do not change size: 16
         )
         self.n_a =  nn.Sequential(
             conv3x3(N+8, N), # do not change size: 16
@@ -273,11 +273,100 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
             p.requires_grad = False
         for p in self.h_s.parameters():
             p.requires_grad = False
-        for p in self.entropy_parameters.parameters():
-            p.requires_grad = False
-        for p in self.context_prediction.parameters():
-            p.requires_grad = False
+        # for p in self.entropy_parameters.parameters():
+        #     p.requires_grad = False
+        # for p in self.context_prediction.parameters():
+        #     p.requires_grad = False
         
+
+    def conditional_compress(self, x, target_x, x_time_embedding, target_x_time_embedding, loc_mask):
+        # print('mapping')
+        # print(x.shape)
+        y = self.g_a(x)
+        z = self.h_a(y)
+
+        target_y =self.g_a(target_x)
+        target_z = self.h_a(target_y)
+
+        concat_time_embedding = torch.cat([x_time_embedding, target_x_time_embedding], dim=1)
+        concat_time_embedding = self.m_a_time(concat_time_embedding) # (bs, N)
+        concat_time_embedding = concat_time_embedding.unsqueeze(-1).unsqueeze(-1) # (bs, N, 1, 1)
+
+        concat_same_time_embedding = torch.cat([x_time_embedding, x_time_embedding], dim=1)
+        concat_same_time_embedding = self.m_a_time(concat_same_time_embedding) # (bs, N)
+        concat_same_time_embedding = concat_same_time_embedding.unsqueeze(-1).unsqueeze(-1) # (bs, N, 1, 1)        
+
+        # print(loc_mask.shape)
+        loc_mask_y = self.mask_pooling_y(loc_mask)
+        loc_mask_z = self.mask_pooling_z(loc_mask_y)
+        # print(loc_mask_y.shape)
+        # print(loc_mask_z.shape)
+        y_w_time = y + concat_same_time_embedding
+        z_w_time = z + concat_same_time_embedding
+        concat_same_y = torch.cat([y_w_time, loc_mask_y], dim=1)
+        concat_same_z = torch.cat([z_w_time, loc_mask_z], dim=1)        
+        hat_same_y = self.m_a(concat_same_y)
+        hat_same_z = self.n_a(concat_same_z)
+
+        with torch.no_grad():
+            new_y = y + concat_time_embedding
+            new_z = z + concat_time_embedding
+            concat_y = torch.cat([new_y, loc_mask_y], dim=1)
+            concat_z = torch.cat([new_z, loc_mask_z], dim=1)
+            hat_target_y = self.m_a(concat_y)
+            hat_target_z = self.n_a(concat_z)
+
+        # print(concat_y.shape, concat_z.shape)
+        # print(hat_target_y.shape, hat_target_z.shape)
+        # sleep
+
+
+        # z_hat, z_likelihoods = self.entropy_bottleneck(z)
+        z_hat, z_likelihoods = self.entropy_bottleneck(hat_same_z)
+        # z_hat = (z_hat + hat_target_z) * 0.5
+        params = self.h_s(z_hat)
+
+        y_hat = self.gaussian_conditional.quantize(
+            y, "noise" if self.training else "dequantize"
+        )
+        # ctx_params = self.context_prediction(y_hat) 
+
+        ctx_params = self.context_prediction(y_hat) + hat_same_y
+        # print(ctx_params.shape, hat_same_y.shape)
+        # sleep
+        
+        gaussian_params = self.entropy_parameters(
+            torch.cat((params, ctx_params), dim=1)
+        )
+        # gaussian_params.shape = (1, 384, 16, 16) if patch H and W = 256
+        # scales_hat.shape = (1, 192, 16, 16)
+        # means_hat.shape = (1, 192, 16, 16)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1) 
+        # print(gaussian_params.shape)
+        # print(scales_hat.shape, means_hat.shape)
+        # sleep
+        _, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
+        # y_hat = y_hat * 0.5 + hat_target_y * 0.5
+        # torch.zeros(5).uniform_(-0.5,0.5) = torch.
+        x_hat = self.g_s(y_hat)
+        # print(x_hat.shape)
+        # plt.imshow(x_hat[0][0].cpu().detach().numpy())
+        # plt.title("cheng2020 x_hat after g_s")
+        # plt.savefig('x_hat after g_s.png')
+        # exit()
+        return {
+            "x_hat": x_hat,
+            "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
+            "target_y": target_y,
+            "target_z": target_z,
+            "hat_target_y": hat_target_y,
+            "hat_target_z": hat_target_z,
+            "y": y,
+            "z": z,
+            "hat_same_y": hat_same_y,
+            "hat_same_z": hat_same_z,
+        }
+
 
 
     def conditional_mapping(self, x, target_x, x_time_embedding, target_x_time_embedding, loc_mask):
@@ -365,7 +454,9 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
             return self.conditional_mapping(x, target_x, x_time_embedding, target_x_time_embedding, loc_mask)
         elif flag == 2:
             return self.conditional_prediction(x, target_x, x_time_embedding, target_x_time_embedding, loc_mask, loc_mask_target)
-        
+        elif flag == 3:
+            return self.conditional_compress(x, target_x, x_time_embedding, target_x_time_embedding, loc_mask)
+                
         else:
             # print(x.shape)
             # plt.imshow(x[0][0].cpu().detach().numpy())
@@ -374,6 +465,7 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
             # plt.savefig('x_input.png')
             # print(i)
             # print(x.shape)
+            torch.cuda.empty_cache()
             y = self.g_a(x)
             # print(y.shape)
             # y_name = 'g_a_1_192_48_92_1'
@@ -388,6 +480,7 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
             # print('y std:', std_y)
 
             z = self.h_a(y)
+
             # mean_z = torch.mean(z, dim=[0,2,3], keepdim=True)
             # std_z = torch.std(z, dim=[0,2,3], keepdim=True)
             # print('z mean:', mean_z)
@@ -401,7 +494,7 @@ class Cheng2020Anchor_Transfer(Cheng2020Anchor):
             # print(z.shape)
             # z_name = 'h_a_63_192_12_23_1'
             # np.save(z_name, z.cpu().detach().numpy())
-            # return y, z
+            return y.detach(), z.detach()
             # exit()
 
             # CVAE ENCODER DECODER (m_a, m_s)

@@ -436,12 +436,15 @@ class EntropyBottleneck(EntropyModel):
     def _logits_cumulative(self, inputs: Tensor, stop_gradient: bool) -> Tensor:
         # TorchScript not yet working (nn.Mmodule indexing not supported)
         logits = inputs
+        # print(logits.shape)
         for i in range(len(self.filters) + 1):
             matrix = getattr(self, f"_matrix{i:d}")
+            # print(matrix.shape)
             if stop_gradient:
                 matrix = matrix.detach()
             logits = torch.matmul(F.softplus(matrix), logits)
-
+            # print(logits.shape)
+            # sleep
             bias = getattr(self, f"_bias{i:d}")
             if stop_gradient:
                 bias = bias.detach()
@@ -471,6 +474,7 @@ class EntropyBottleneck(EntropyModel):
     def forward(
         self, x: Tensor, training: Optional[bool] = None
     ) -> Tuple[Tensor, Tensor]:
+        # print(x.shape)
         if training is None:
             training = self.training
 

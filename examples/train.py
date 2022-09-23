@@ -181,13 +181,18 @@ class RateDistortionLoss_cond_mapping(nn.Module):
             for likelihoods in output["likelihoods"].values()
         )
         out["mse_loss"] = self.mse(output["x_hat"], target)
-        out["predict_z_loss"] = self.mse(output["hat_target_z"], output["target_z"])
-        out["predict_y_loss"] = self.mse(output["hat_target_y"], output["target_y"])
+        # out["predict_z_loss"] = 0
+        # out["predict_y_loss"] = 0
+        # out["predict_same_z_loss"] = 0
+        # out["predict_same_y_loss"] = 0
 
-        out["predict_same_z_loss"] = self.mse(output["hat_same_z"], output["z"])
-        out["predict_same_y_loss"] = self.mse(output["hat_same_y"], output["y"])
+        out["predict_z_loss"] = self.mse(output["target_z"], output["target_z"])
+        out["predict_y_loss"] = self.mse(output["target_y"], output["target_y"])
 
-        out["loss"] = self.lmbda * 255 **2 * (out["mse_loss"] + 0.1 * (out["predict_y_loss"] + out["predict_z_loss"]) + 0.1 * (out["predict_same_y_loss"] + out["predict_same_z_loss"])) + out["bpp_loss"]
+        out["predict_same_z_loss"] = self.mse(output["z"], output["z"])
+        out["predict_same_y_loss"] = self.mse(output["y"], output["y"])
+
+        out["loss"] = out["bpp_loss"] # self.lmbda * 255 **2 * (out["mse_loss"]) #  + 0.1 * (out["predict_y_loss"] + out["predict_z_loss"]) + 0.1 * (out["predict_same_y_loss"] + out["predict_same_z_loss"])) + out["bpp_loss"]
 
         out["temp_mse"] = self.mse(output["x_hat"][:, 0, :, :], target[:, 0, :, :])
         out["salt_mse"] = self.mse(output["x_hat"][:, 1, :, :], target[:, 1, :, :])
@@ -362,7 +367,7 @@ def train_one_epoch(
         optimizer.zero_grad()
         aux_optimizer.zero_grad()
 
-        out_net = model(d, target_x=target_data, x_time_embedding=d_time_embedding, target_x_time_embedding=target_data_time_embedding, loc_mask=loc_emb, flag=1)
+        out_net = model(d, target_x=target_data, x_time_embedding=d_time_embedding, target_x_time_embedding=target_data_time_embedding, loc_mask=loc_emb, flag=3)
         # print(d[0, 0, :, :])
         # sleep
 
@@ -497,6 +502,7 @@ def train_one_epoch(
     print('epoch {} train loss: {}'.format(epoch, loss_list.avg))
     print('learning rate: {}'.format(optimizer.param_groups[0]['lr']))
     print('mse loss:', mse_loss_list.avg)
+    print('bpp loss:', bpp_loss_list.avg)
     print('target y loss:', mse_target_y_loss_list.avg)
     print('target z loss:', mse_target_z_loss_list.avg)
     print('target same y loss:', mse_same_y_loss_list.avg)
@@ -520,11 +526,22 @@ def test_epoch(epoch, test_dataloader, model, criterion, log_dir=None):
 
     # mse_y_loss = AverageMeter()
     # mse_z_loss = AverageMeter()
-
+    y_list = []
+    z_list = []
+    padding = [16, 16, 23, 24]
+    pad_left, pad_right, pad_top, pad_bottom = padding   
     with torch.no_grad():
         for d in test_dataloader:
             d, time_index, dataset_index = d
+            print(time_index)
             d = d.float()
+            d = F.pad(
+                d,
+                (pad_left, pad_right, pad_top, pad_bottom),
+                mode="constant",
+                value=0,
+            )
+
             # d = d + 0.1
             # d[d > 1.1] = 0
             d = d.to(device)
@@ -532,6 +549,13 @@ def test_epoch(epoch, test_dataloader, model, criterion, log_dir=None):
             # d = torch.nan_to_num(d, posinf=-1)
             # print(d[0, 0, :, :])
             out_net = model(d)
+            y, z = out_net
+            y = y.cpu()
+            z = z.cpu()
+            torch.cuda.empty_cache()
+            y_list.append(y)
+            z_list.append(z)
+            continue
             # print(out_net[0, 0, :, :])
             out_criterion = criterion(out_net, d)
 
@@ -545,6 +569,13 @@ def test_epoch(epoch, test_dataloader, model, criterion, log_dir=None):
             salt_mse_list.update(out_criterion["salt_mse"].detach())
             zeta_mse_list.update(out_criterion["zeta_mse"].detach())
             temp_salt_mse_list.update(out_criterion["temp_salt_mse"].detach())
+    new_y = torch.cat(y_list, dim=0)
+    new_z = torch.cat(z_list, dim=0)
+    print(new_y.shape)
+    print(new_z.shape)
+    np.save('/efs/users/zucksliu/env_project/wind_dataset/wind_y_192_48_92.npy', new_y.numpy())
+    np.save('/efs/users/zucksliu/env_project/wind_dataset/wind_z_192_12_23.npy', new_z.numpy())
+    sleep
 
     log(log_dir / 'log.txt', f"Test epoch {epoch}: Average losses:"
         f"\tLoss: {loss.avg:.3f} |"
@@ -663,6 +694,7 @@ def main(argv):
     # print(y.shape)
     # exit()
     args = parse_args(argv)
+    # net = image_models[args.model](quality=6, combine=True)
     net = image_models[args.model](quality=6, combine=True)
     print_net = True
     if print_net:
@@ -819,8 +851,8 @@ def main(argv):
     )
 
     #quality = 6
-    if args.cuda and torch.cuda.device_count() > 1:
-        net = CustomDataParallel(net, device_ids=[0, 1, 2, 3])
+    # if args.cuda and torch.cuda.device_count() > 1:
+    #     net = CustomDataParallel(net, device_ids=[0, 1, 2, 3])
 
     optimizer, aux_optimizer = configure_optimizers(net, args)
     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
@@ -857,7 +889,8 @@ def main(argv):
     test_mse_loss = []
     print('First test loaded model as a reference...')
     log(output_dir / 'log.txt', f"First test loaded model as a reference...")
-    test_epoch(-1, test_dataloader, net, criterion_test, log_dir=output_dir)
+    # test_epoch(-1, test_dataloader, net, criterion_test, log_dir=output_dir)
+    test_epoch(-1, train_dataloader, net, criterion_test, log_dir=output_dir)
     for epoch in range(last_epoch, args.epochs):
         # if epoch == 1:
         #     exit()
