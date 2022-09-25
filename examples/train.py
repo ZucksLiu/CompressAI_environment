@@ -30,6 +30,9 @@ from compressai.layers.layers import PositionalEmbedding
 # max_min = [28.265799+0.81310266, 35.88579+0.0005704858, 825.0345+26.1313]
 
 
+
+
+
 def time_index_to_year_month(all_time_index):
     all_year = all_time_index // 12
     all_month = all_time_index % 12
@@ -272,6 +275,249 @@ def configure_optimizers(net, args):
         lr=args.aux_learning_rate,
     )
     return optimizer, aux_optimizer
+
+
+
+def train_one_epoch_yz(
+    model, criterion, train_dataloader, train_z_dataloader, optimizer, aux_optimizer, epoch, clip_max_norm, concat_dataset_train=None, log_dir=None
+):
+    model.train()
+    device = next(model.parameters()).device
+
+    loss_list = AverageMeter()
+    bpp_loss_list = AverageMeter()
+    mse_loss_list = AverageMeter()
+    aux_loss_list = AverageMeter()
+    temp_mse_list = AverageMeter()
+    salt_mse_list = AverageMeter()
+    temp_salt_mse_list = AverageMeter()
+    zeta_mse_list =AverageMeter()
+
+    mse_target_y_loss_list = AverageMeter()
+    mse_target_z_loss_list = AverageMeter()    
+
+    mse_same_y_loss_list = AverageMeter()
+    mse_same_z_loss_list = AverageMeter()  
+
+
+    padding = [16, 16, 23, 24]
+    pad_left, pad_right, pad_top, pad_bottom = padding
+    idx_left, idx_right, idx_top, idx_bottom = [23, 24, 16, 16]
+    for i, d in enumerate(train_dataloader):
+        d, time_index, dataset_index = d
+        d = d.float() # change to float 32 to match the model
+        bs, c, h, w = d.size(0), d.size(1), d.size(2), d.size(3) # batch size, channel, height(721), width(1440)
+        p = 64  # maximum 6 strides of 2
+        d = F.pad(
+            d,
+            (pad_left, pad_right, pad_top, pad_bottom),
+            mode="constant",
+            value=0,
+        )
+        # print(d.shape)
+        # new_h = (h + p - 1) // p * p
+        # new_w = (w + p - 1) // p * p
+        # padding_left = (new_w - w) // 2
+        # padding_right = new_w - w - padding_left
+        # padding_top = (new_h - h) // 2
+        # padding_bottom = new_h - h - padding_top
+        # d = F.pad(
+        #     d,
+        #     (padding_left, padding_right, padding_top, padding_bottom),
+        #     mode="constant",
+        #     value=0,
+        # )
+
+
+
+        # h, w = d.size(2), d.size(3)
+        patch_sizes = [64, 128, 256]
+        patch_sizes = [256]
+        patch_size = np.random.choice(patch_sizes, 1)[0]
+        # # print(h-patch_size+1)
+
+        # left = torch.randint(0, h-patch_size+1+idx_left, size=(1,)).item()
+        # top = torch.randint(0, w-patch_size+1+idx_top, size=(1,)).item()
+        left_list = torch.randint(0, h-patch_size+1+idx_left, size=(bs,))
+        top_list = torch.randint(0, w-patch_size+1+idx_top, size=(bs,))
+        # print(left_list)
+        # print(top_list)
+        # print(left, top)
+        # sleep
+
+        # right_list = left_list + patch_size
+        # bottom_list = top_list + patch_size
+        
+        # d = d[:, :, left:right, top:bottom]
+        # d = crop(d, left,top, patch_size, patch_size)
+        loc_emb = batch_location_embedding(grid_location_embedding_padding, left_list, top_list, lat_res=patch_size, long_res=patch_size, loc_res=8)
+        loc_emb = torch.permute(loc_emb, (0, 3, 1, 2))
+        # print(loc_emb.shape)
+        # sleep
+        d = torch.cat([d[i, :, left_list[i]: left_list[i] + patch_size, top_list[i]: top_list[i] + patch_size].unsqueeze(0) for i in range(bs)], dim=0)
+        # print(d.shape)
+        target_data, new_time_index = fetch_target_data(time_index, dataset_index, left_list, top_list, concat_dataset_train, lati_res=patch_size, long_res=patch_size, total_time=756, padding=padding)
+        # print(target_data.shape)
+        d_time_embedding = fetch_time_embedding(time_index, all_time_index_embedding)
+        target_data_time_embedding = fetch_time_embedding(new_time_index, all_time_index_embedding)        
+        # print(d_time_embedding.shape)
+        # print(target_data_time_embedding.shape)
+        # sleep
+        d = d.float().to(device)
+        target_data = target_data.float().to(device)
+        d_time_embedding = d_time_embedding.float().to(device)
+        target_data_time_embedding = target_data_time_embedding.float().to(device)
+        loc_emb = loc_emb.float().to(device)
+        optimizer.zero_grad()
+        aux_optimizer.zero_grad()
+
+        out_net = model(d, target_x=target_data, x_time_embedding=d_time_embedding, target_x_time_embedding=target_data_time_embedding, loc_mask=loc_emb, flag=3)
+        # print(d[0, 0, :, :])
+        # sleep
+
+        # n = d.cpu().numpy().flatten()
+        # print(np.count_nonzero(n > 1))
+        # plt.hist(n)
+        # plt.show()
+
+        # n = d[:, 1 ,:, :].cpu().numpy()
+        # print(np.where(n == 1))
+        # print(torch.max(d[:, 1, :, :]))
+        # print(torch.min(d))
+        # print((d == 1).nonzero().squeeze())
+        # exit()
+
+        # d = torch.nan_to_num(d, posinf=-1)
+        # !zero grad:
+            # optimizer.zero_grad()
+            # aux_optimizer.zero_grad()
+        # print(d.shape)
+        # scale_100 = [3.4669, 2.7866, 11.7793]
+        # print(d[0, 0, :, :])
+        # print(d[0, 1, :, :])
+        # print(d[0, 2, :, :])
+        # for i in range(3):
+
+
+        # d[:, 0, :, :] = torch.where(d[:, 0, :, :] == 3.4669, 0, d[:, 0, :, :]+0.1)
+        # print(d[0, 0, :, :])
+        # print(d[0, 1, :, :])
+        # print(d[0, 2, :, :])
+
+        # exit()
+        # d = d + 0.1
+        # d = torch.add(d, 0.1)
+        # d[d > 2] = 0
+
+        # print(d[0, 0, :, :])
+        # print(d[0, 0, 0, 0])
+        # print(d[0, 1, :, :])
+        # print(d[0, 2, :, :])
+
+        # print(torch.max(d[:, 0, :, :]))
+        # print(torch.min(d))
+        # exit()
+        # print(d.shape)
+        # with torch.no_grad():
+        #     y, z = model(d)
+        # y_name = 'g_a_'+str(d.shape[0])+'_192_48_92_' + str(i)
+        # np.save(y_name, y.cpu().detach().numpy())
+        #
+        # z_name = 'h_a_16_192_12_23_' + str(i)
+        # np.save(z_name, z.cpu().detach().numpy())
+        # print(i)
+        #
+        # continue
+        # out_net['x_hat'].clamp_(0, 1)
+        # print(out_net['x_hat'][0, 2, :, :])
+        # print(out_net['x_hat'][0, 0, :, :])
+        # exit()
+
+        out_criterion = criterion(out_net, d)
+        out_criterion["loss"].backward()
+        if clip_max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_max_norm)
+        optimizer.step()
+
+        aux_loss = model.aux_loss()
+        aux_loss.backward()
+        aux_optimizer.step()
+
+        bpp_loss_list.update(out_criterion["bpp_loss"].detach())
+        loss_list.update(out_criterion["loss"].detach())
+        mse_loss_list.update(out_criterion["mse_loss"].detach())
+        aux_loss_list.update(aux_loss.detach())
+        temp_mse_list.update(out_criterion["temp_mse"].detach())
+        salt_mse_list.update(out_criterion["salt_mse"].detach())
+        zeta_mse_list.update(out_criterion["zeta_mse"].detach())
+        temp_salt_mse_list.update(out_criterion["temp_salt_mse"].detach())
+
+        mse_target_y_loss_list.update(out_criterion["predict_y_loss"].detach())
+        mse_target_z_loss_list.update(out_criterion["predict_z_loss"].detach())
+        mse_same_y_loss_list.update(out_criterion["predict_same_y_loss"].detach())
+        mse_same_z_loss_list.update(out_criterion["predict_same_z_loss"].detach())
+
+
+        if i % 10 == 0:
+            # print(i)
+            log(log_dir / 'log.txt',f"Train epoch {epoch}: ["
+                f"{i*len(d)}/{len(train_dataloader.dataset)}"
+                f" ({100. * i / len(train_dataloader):.0f}%)]"
+                f'\tLoss: {out_criterion["loss"].item():.3f} |'
+                f'\tMSE loss: {out_criterion["mse_loss"].item():.3f} |'
+                f'\tMSE y loss: {out_criterion["predict_y_loss"].item():.6f} |'
+                f'\tMSE z loss: {out_criterion["predict_z_loss"].item():.6f} |'
+                f'\tMSE same y loss: {out_criterion["predict_same_y_loss"].item():.6f} |'
+                f'\tMSE same z loss: {out_criterion["predict_same_z_loss"].item():.6f} |'
+                f'\tBpp loss: {out_criterion["bpp_loss"].item():.2f} |'
+                f"\tAux loss: {aux_loss.item():.2f}")
+            # plt.plot(zero_counts_distribution)
+
+            # for x, y in zip(np.arange(12), zero_counts_distribution):
+            #     plt.text(x=x,y=y, s=str(int(y.item())))
+            # file_name = "epoch"+str(epoch)+"batch"+str(i//10)
+            # plt.show()
+            #
+            # plt.title("zero number percent for 10 batches")
+            # plt.savefig(file_name)
+            # plt.clf()
+            # if i != 0:
+            #     zero_counts_distribution = torch.zeros(12)
+
+            # print(
+            #     f"Train epoch {epoch}: ["
+            #     f"{i*len(d)}/{len(train_dataloader.dataset)}"
+            #     f" ({100. * i / len(train_dataloader):.0f}%)]"
+            #     f'\tLoss: {out_criterion["loss"].item():.3f} |'
+            #     f'\tMSE loss: {out_criterion["mse_loss"].item():.3f} |'
+            #     f'\tBpp loss: {out_criterion["bpp_loss"].item():.2f} |'
+            #     f"\tAux loss: {aux_loss.item():.2f}"
+            # )
+    log(log_dir / 'log.txt', f"Train epoch {epoch}: Average losses:"
+          f"\tLoss: {loss_list.avg:.3f} |"
+          f"\tMSE loss: {mse_loss_list.avg:.8f} |"
+          f'\tMSE y loss: {mse_target_y_loss_list.avg:.6f} |'
+          f'\tMSE z loss: {mse_target_z_loss_list.avg:.6f} |'
+          f'\tMSE same y loss: {mse_same_y_loss_list.avg:.6f} |'
+          f'\tMSE same z loss: {mse_same_z_loss_list.avg:.6f} |'
+          f"\tBpp loss: {bpp_loss_list.avg:.2f} |"
+          f"\tAux loss: {aux_loss_list.avg:.2f}")
+    # print(mse_loss_list)
+    print('epoch {} train loss: {}'.format(epoch, loss_list.avg))
+    print('learning rate: {}'.format(optimizer.param_groups[0]['lr']))
+    print('mse loss:', mse_loss_list.avg)
+    print('bpp loss:', bpp_loss_list.avg)
+    print('target y loss:', mse_target_y_loss_list.avg)
+    print('target z loss:', mse_target_z_loss_list.avg)
+    print('target same y loss:', mse_same_y_loss_list.avg)
+    print('target same z loss:', mse_same_z_loss_list.avg)
+    # exit()
+    return loss_list.avg.item(), mse_loss_list.avg.item(), temp_mse_list.avg.item(), salt_mse_list.avg.item(), zeta_mse_list.avg.item(), temp_salt_mse_list.avg.item()
+
+
+
+
+
 
 
 def train_one_epoch(
@@ -759,6 +1005,27 @@ def main(argv):
     test_data1 = np.load("/efs/users/zucksliu/env_project/wind_dataset/wind_test_tu_75_3_721_1440.npy")
     test_data2 = np.load("/efs/users/zucksliu/env_project/wind_dataset/wind_test_tv_75_3_721_1440.npy")
 
+    # train_y = np.load('/efs/users/zucksliu/env_project/wind_dataset/wind_y_192_48_92.npy')
+    # train_z = np.load('/efs/users/zucksliu/env_project/wind_dataset/wind_z_192_12_23.npy')
+
+
+    train_tu_y = np.load('/efs/users/zucksliu/env_project/wind_dataset/wind_tu_y_192_48_92.npy')
+    train_tu_z = np.load('/efs/users/zucksliu/env_project/wind_dataset/wind_tu_z_192_12_23.npy')
+    train_tv_y = np.load('/efs/users/zucksliu/env_project/wind_dataset/wind_tv_y_192_48_92.npy')
+    train_tv_z = np.load('/efs/users/zucksliu/env_project/wind_dataset/wind_tv_z_192_12_23.npy')
+
+
+    # train_y_tu = train_y[:756, :]
+    # train_y_tv = train_y[756:, :]
+    # np.save('/efs/users/zucksliu/env_project/wind_dataset/wind_y_tu_192_48_92.npy', train_y_tu)
+    # np.save('/efs/users/zucksliu/env_project/wind_dataset/wind_y_tv_192_48_92.npy', train_y_tv)
+
+    # train_z_tu = train_z[:756, :]
+    # train_z_tv = train_z[756:, :]
+    # np.save('/efs/users/zucksliu/env_project/wind_dataset/wind_z_tu_192_12_23.npy', train_z_tu)
+    # np.save('/efs/users/zucksliu/env_project/wind_dataset/wind_z_tv_192_12_23.npy', train_z_tv)
+    # sleep
+
     # test_data = np.load("/data/zixinl6/downscaling/test_876_3_1302_663.npy")
     # print(train_data.dtype)
     # tr = torch.tensor(train_data)
@@ -770,6 +1037,12 @@ def main(argv):
 
     te1 = torch.from_numpy(test_data1)
     te2 = torch.from_numpy(test_data2)
+
+    tu_y = torch.from_numpy(train_tu_y)
+    tu_z = torch.from_numpy(train_tu_z)
+
+    tv_y = torch.from_numpy(train_tv_y)
+    tv_z = torch.from_numpy(train_tv_z)
     # te = torch.from_numpy(test_data)
     # te[te == 1.0000e+20] = 100
     # if args.channel:
@@ -829,7 +1102,17 @@ def main(argv):
     test_dataset1 = CustomTensorDataset(te1, transforms = test_transforms1)
     test_dataset2 = CustomTensorDataset(te2, transforms=test_transforms2)
 
+    train_tu_y_dataset = CustomTensorDataset(tu_y, transforms = None)
+    train_tu_z_dataset = CustomTensorDataset(tu_z, transforms = None)
+    train_tv_y_dataset = CustomTensorDataset(tv_y, transforms = None)
+    train_tv_z_dataset = CustomTensorDataset(tv_z, transforms = None)
+    train_y_dataset = [train_tu_y_dataset, train_tv_y_dataset]
+    concat_y_dataset_train = ConcatDataset(train_y_dataset)
+    train_z_dataset = [train_tu_z_dataset, train_tv_z_dataset]
+    concat_z_dataset_train = ConcatDataset(train_z_dataset)
 
+    train_y_dataloader = DataLoader(concat_y_dataset_train, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False, pin_memory=(device == device))
+    train_z_dataloader = DataLoader(concat_z_dataset_train, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False, pin_memory=(device == device))
 
     train_dataloader = DataLoader(
         concat_dataset_train,
