@@ -279,7 +279,7 @@ def configure_optimizers(net, args):
 
 
 def train_one_epoch_yz(
-    model, criterion, train_dataloader, train_z_dataloader, optimizer, aux_optimizer, epoch, clip_max_norm, concat_dataset_train=None, log_dir=None
+    model, criterion, train_y_dataloader, train_z_dataloader, optimizer, aux_optimizer, epoch, clip_max_norm, concat_dataset_train=None, log_dir=None
 ):
     model.train()
     device = next(model.parameters()).device
